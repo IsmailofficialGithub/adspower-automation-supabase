@@ -1,0 +1,1817 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AdsPower Automation Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg: #080812;
+      --bg2: #0d0d1f;
+      --surface: rgba(255, 255, 255, 0.045);
+      --border: rgba(255, 255, 255, 0.08);
+      --primary: #7c3aed;
+      --primary2: #5b21b6;
+      --blue: #3b82f6;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --red: #ef4444;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --radius: 12px;
+      --gap: 20px;
+    }
+
+    html,
+    body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    /* ── Layout ────────────────────────────────────────── */
+    .shell {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* ── Sidebar ───────────────────────────────────────── */
+    .sidebar {
+      width: 220px;
+      flex-shrink: 0;
+      background: rgba(255, 255, 255, 0.03);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 20px 12px;
+      gap: 4px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px 18px;
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: -0.3px;
+    }
+
+    .logo .icon-wrap {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--primary), var(--blue));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 500;
+      transition: all .15s;
+      user-select: none;
+    }
+
+    .nav-item:hover {
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .nav-item.active {
+      background: linear-gradient(135deg, rgba(124, 58, 237, .25), rgba(59, 130, 246, .15));
+      color: var(--text);
+    }
+
+    .nav-item.active svg {
+      color: var(--primary);
+    }
+
+    .nav-item svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* ── Main content ──────────────────────────────────── */
+    .main {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 28px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.02);
+      backdrop-filter: blur(10px);
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .page-title {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      background: rgba(16, 185, 129, .12);
+      color: var(--green);
+      border: 1px solid rgba(16, 185, 129, .25);
+      transition: all .3s;
+    }
+
+    .status-pill.idle {
+      background: rgba(100, 116, 139, .1);
+      color: var(--muted);
+      border-color: rgba(100, 116, 139, .2);
+    }
+
+    .status-pill.running {
+      background: rgba(16, 185, 129, .12);
+      color: var(--green);
+      border-color: rgba(16, 185, 129, .25);
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .dot.pulse {
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1
+      }
+
+      50% {
+        opacity: .3
+      }
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 18px;
+      border-radius: 8px;
+      border: none;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+
+    .btn svg {
+      width: 15px;
+      height: 15px;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary2);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 15px rgba(124, 58, 237, .4);
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, .15);
+      color: var(--red);
+      border: 1px solid rgba(239, 68, 68, .25);
+    }
+
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, .25);
+    }
+
+    .btn-ghost {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-ghost:hover {
+      background: rgba(255, 255, 255, .08);
+    }
+
+    .btn-green {
+      background: rgba(16, 185, 129, .15);
+      color: var(--green);
+      border: 1px solid rgba(16, 185, 129, .25);
+    }
+
+    .btn-green:hover {
+      background: rgba(16, 185, 129, .25);
+    }
+
+    .btn-sm {
+      padding: 5px 12px;
+      font-size: 12px;
+    }
+
+    /* Tabs content */
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 28px;
+    }
+
+    .tab-panel {
+      display: none;
+      animation: fadeIn .15s;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(4px)
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0)
+      }
+    }
+
+    /* ── Cards / grids ─────────────────────────────────── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--gap);
+      margin-bottom: var(--gap);
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      backdrop-filter: blur(12px);
+    }
+
+    .stat-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -1px;
+    }
+
+    .stat-sub {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .stat-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 4px;
+    }
+
+    .stat-icon svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .purple-icon {
+      background: rgba(124, 58, 237, .15);
+      color: var(--primary);
+    }
+
+    .blue-icon {
+      background: rgba(59, 130, 246, .15);
+      color: var(--blue);
+    }
+
+    .green-icon {
+      background: rgba(16, 185, 129, .15);
+      color: var(--green);
+    }
+
+    .amber-icon {
+      background: rgba(245, 158, 11, .15);
+      color: var(--amber);
+    }
+
+    /* ── Log viewer ────────────────────────────────────── */
+    .log-box {
+      background: #05050f;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      height: 340px;
+      overflow-y: auto;
+      padding: 14px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .log-box::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .log-box::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+
+    .log-line {
+      color: #94a3b8;
+    }
+
+    .log-line.info {
+      color: #60a5fa;
+    }
+
+    .log-line.warn {
+      color: var(--amber);
+    }
+
+    .log-line.error {
+      color: var(--red);
+    }
+
+    .log-line.debug {
+      color: #475569;
+    }
+
+    .log-line.success {
+      color: var(--green);
+    }
+
+    .log-empty {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    /* ── Section headers ───────────────────────────────── */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .section-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .section-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    /* ── Table ─────────────────────────────────────────── */
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 11px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, .04);
+      vertical-align: middle;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, .025);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .badge-windows {
+      background: rgba(59, 130, 246, .15);
+      color: #60a5fa;
+    }
+
+    .badge-mac {
+      background: rgba(124, 58, 237, .15);
+      color: #a78bfa;
+    }
+
+    .badge-android {
+      background: rgba(16, 185, 129, .15);
+      color: #34d399;
+    }
+
+    .badge-used {
+      background: rgba(239, 68, 68, .12);
+      color: #f87171;
+    }
+
+    .badge-fresh {
+      background: rgba(16, 185, 129, .12);
+      color: #34d399;
+    }
+
+    .badge-socks5 {
+      background: rgba(245, 158, 11, .12);
+      color: #fbbf24;
+    }
+
+    .badge-http {
+      background: rgba(100, 116, 139, .12);
+      color: var(--muted);
+    }
+
+    /* ── Forms / inputs ────────────────────────────────── */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted);
+    }
+
+    .input,
+    .textarea,
+    .select {
+      background: rgba(255, 255, 255, .05);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 13px;
+      padding: 9px 12px;
+      width: 100%;
+      outline: none;
+      transition: border-color .15s;
+    }
+
+    .input:focus,
+    .textarea:focus,
+    .select:focus {
+      border-color: var(--primary);
+    }
+
+    .textarea {
+      resize: vertical;
+      min-height: 120px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+    }
+
+    .select option {
+      background: #1e1e3a;
+      color: var(--text);
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .input-row .input {
+      flex: 1;
+    }
+
+    /* Range slider */
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    input[type=range] {
+      flex: 1;
+      -webkit-appearance: none;
+      height: 4px;
+      background: rgba(255, 255, 255, .1);
+      border-radius: 4px;
+      outline: none;
+    }
+
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--primary);
+      cursor: pointer;
+      box-shadow: 0 0 0 3px rgba(124, 58, 237, .25);
+    }
+
+    .range-val {
+      font-weight: 600;
+      min-width: 36px;
+      text-align: right;
+      font-size: 13px;
+      color: var(--primary);
+    }
+
+    /* ── Settings panel ────────────────────────────────── */
+    .settings-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--gap);
+    }
+
+    .settings-section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .settings-section-header {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 14px;
+      margin-top: 4px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      background: rgba(124, 58, 237, .12);
+      border-left: 3px solid var(--primary);
+      letter-spacing: .2px;
+    }
+
+    /* ── Empty state ───────────────────────────────────── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px;
+      color: var(--muted);
+      gap: 12px;
+    }
+
+    .empty-state svg {
+      width: 40px;
+      height: 40px;
+      opacity: .3;
+    }
+
+    .empty-state p {
+      font-size: 13px;
+    }
+
+    /* ── Toast ─────────────────────────────────────────── */
+    .toast-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .toast {
+      padding: 12px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      animation: slideIn .2s ease;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
+      max-width: 320px;
+    }
+
+    .toast.success {
+      background: rgba(16, 185, 129, .9);
+      color: #fff;
+    }
+
+    .toast.error {
+      background: rgba(239, 68, 68, .9);
+      color: #fff;
+    }
+
+    .toast.info {
+      background: rgba(59, 130, 246, .9);
+      color: #fff;
+    }
+
+    @keyframes slideIn {
+      from {
+        transform: translateX(100%);
+        opacity: 0
+      }
+
+      to {
+        transform: translateX(0);
+        opacity: 1
+      }
+    }
+
+    /* Checkbox */
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+    }
+
+    .check-row input[type=checkbox] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--primary);
+      cursor: pointer;
+    }
+
+    /* Scrollbar */
+    .content::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .content::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+
+    /* Divider */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 20px 0;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--gap);
+    }
+
+    .full-width-card {
+      margin-bottom: var(--gap);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .card-title {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    #proxyCount,
+    #websiteCount {
+      font-size: 12px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="shell">
+
+    <!-- ── Sidebar ──────────────────────────────────────────────── -->
+    <aside class="sidebar">
+      <div class="logo">
+        <div class="icon-wrap"><i data-lucide="bot" style="width:16px;height:16px;color:#fff"></i></div>
+        AdsPower
+      </div>
+
+      <div class="nav-item active" onclick="switchTab('dashboard')">
+        <i data-lucide="layout-dashboard"></i><span>Dashboard</span>
+      </div>
+      <div class="nav-item" onclick="switchTab('proxies')">
+        <i data-lucide="network"></i><span>Proxies</span>
+      </div>
+      <div class="nav-item" onclick="switchTab('websites')">
+        <i data-lucide="globe"></i><span>Websites</span>
+      </div>
+      <div class="nav-item" onclick="switchTab('settings')">
+        <i data-lucide="settings-2"></i><span>Settings</span>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="nav-item" onclick="clearUsed()" title="Reset used proxies">
+          <i data-lucide="rotate-ccw"></i><span>Reset Used</span>
+        </div>
+        <div style="padding:10px 12px;border-top:1px solid var(--border);margin-top:8px">
+          <div
+            style="font-size:11px;color:var(--muted);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            id="userEmail">—</div>
+          <button class="btn btn-ghost btn-sm" onclick="logout()" style="width:100%;justify-content:center;gap:6px">
+            <i data-lucide="log-out" style="width:13px;height:13px"></i> Sign Out
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ── Main ─────────────────────────────────────────────────── -->
+    <div class="main">
+      <!-- Header -->
+      <div class="header">
+        <div class="header-left">
+          <span id="pageTitle" class="page-title">Dashboard</span>
+          <div id="statusPill" class="status-pill idle">
+            <div id="statusDot" class="dot"></div>
+            <span id="statusText">Idle</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button class="btn btn-danger btn-sm" id="stopBtn" onclick="stopRun()" style="display:none">
+            <i data-lucide="square"></i> Stop
+          </button>
+          <button class="btn btn-primary" id="runBtn" onclick="startRun()">
+            <i data-lucide="play"></i> Run Automation
+          </button>
+        </div>
+      </div>
+
+      <!-- Content -->
+      <div class="content">
+
+        <!-- ── Dashboard tab ──────────────────────────────────── -->
+        <div class="tab-panel active" id="tab-dashboard">
+          <div class="stats-grid">
+            <div class="card stat-card">
+              <div class="stat-icon purple-icon"><i data-lucide="server"></i></div>
+              <div class="stat-label">Total Proxies</div>
+              <div class="stat-value" id="s-total">—</div>
+              <div class="stat-sub" id="s-fresh-sub">— fresh</div>
+            </div>
+            <div class="card stat-card">
+              <div class="stat-icon red-icon" style="background:rgba(239,68,68,.15);color:var(--red)"><i
+                  data-lucide="check-check"></i></div>
+              <div class="stat-label">Used Proxies</div>
+              <div class="stat-value" id="s-used">—</div>
+              <div class="stat-sub" id="s-pct">—% consumed</div>
+            </div>
+            <div class="card stat-card">
+              <div class="stat-icon green-icon"><i data-lucide="shield-check"></i></div>
+              <div class="stat-label">Fresh Proxies</div>
+              <div class="stat-value" id="s-fresh">—</div>
+              <div class="stat-sub">ready to use</div>
+            </div>
+            <div class="card stat-card">
+              <div class="stat-icon blue-icon"><i data-lucide="globe"></i></div>
+              <div class="stat-label">Websites</div>
+              <div class="stat-value" id="s-sites">—</div>
+              <div class="stat-sub">target URLs</div>
+            </div>
+          </div>
+
+          <!-- Log viewer -->
+          <div class="card full-width-card">
+            <div class="card-header">
+              <span class="card-title">Live Logs</span>
+              <button class="btn btn-ghost btn-sm" onclick="clearLogs()"><i data-lucide="trash-2"></i> Clear</button>
+            </div>
+            <div class="log-box" id="logBox">
+              <span class="log-empty">Logs will appear here when automation runs…</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Proxies tab ─────────────────────────────────── -->
+        <div class="tab-panel" id="tab-proxies">
+          <div class="two-col" style="margin-bottom:var(--gap)">
+            <div class="card">
+              <div class="card-title" style="margin-bottom:12px">Add Proxies</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Paste proxy URL(s) — one per line</label>
+                <textarea id="proxyBulk" class="textarea"
+                  placeholder="socks5://host:1002:user:pass&#10;socks5://host:1002:user:pass:mac&#10;http://host:1000:user:pass:windows"></textarea>
+              </div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">OR fill in manually</label>
+                <div class="input-row">
+                  <input class="input" id="px-host" placeholder="host" />
+                  <input class="input" id="px-port" placeholder="port" type="number" style="max-width:90px" />
+                </div>
+                <div class="input-row" style="margin-top:8px">
+                  <input class="input" id="px-user" placeholder="username" />
+                  <input class="input" id="px-pass" placeholder="password" />
+                </div>
+                <div class="input-row" style="margin-top:8px">
+                  <select class="select" id="px-proto">
+                    <option value="socks5">socks5</option>
+                    <option value="http">http</option>
+                    <option value="https">https</option>
+                    <option value="socks4">socks4</option>
+                  </select>
+                  <select class="select" id="px-os">
+                    <option value="windows">windows</option>
+                    <option value="mac">mac</option>
+                    <option value="android">android</option>
+                  </select>
+                </div>
+              </div>
+              <button class="btn btn-primary" style="width:100%" onclick="addProxies()">
+                <i data-lucide="plus-circle"></i> Add Proxy/Proxies
+              </button>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="margin-bottom:12px">Proxy Stats</div>
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="color:var(--muted);font-size:13px">Total in list</span>
+                  <span id="proxyCount" style="font-weight:600;font-size:16px">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="color:var(--muted);font-size:13px">Windows proxies</span>
+                  <span id="px-win-count" style="font-weight:600">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="color:var(--muted);font-size:13px">Mac proxies</span>
+                  <span id="px-mac-count" style="font-weight:600">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="color:var(--muted);font-size:13px">Android proxies</span>
+                  <span id="px-and-count" style="font-weight:600">—</span>
+                </div>
+                <hr class="divider" />
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="color:var(--muted);font-size:13px">Fresh</span>
+                  <span class="badge badge-fresh" id="px-fresh-badge">—</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <span style="color:var(--muted);font-size:13px">Used</span>
+                  <span class="badge badge-used" id="px-used-badge">—</span>
+                </div>
+                <button class="btn btn-danger btn-sm" style="width:100%;margin-top:4px"
+                  onclick="deleteSelectedProxies()">
+                  <i data-lucide="trash-2"></i> Delete Selected
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Proxy List <span id="px-table-count"
+                  style="color:var(--muted);font-size:12px;font-weight:400"></span></span>
+              <div class="section-actions">
+                <label class="check-row"><input type="checkbox" id="selectAll" onchange="toggleSelectAll(this)" />
+                  Select all</label>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:32px"></th>
+                    <th>Host</th>
+                    <th>Port</th>
+                    <th>User</th>
+                    <th>Protocol</th>
+                    <th>OS</th>
+                    <th>Status</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="proxyTableBody">
+                  <tr>
+                    <td colspan="8">
+                      <div class="empty-state"><i data-lucide="server-off"></i>
+                        <p>No proxies loaded</p>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Websites tab ───────────────────────────────── -->
+        <div class="tab-panel" id="tab-websites">
+          <div class="two-col" style="margin-bottom:var(--gap)">
+            <div class="card">
+              <div class="card-title" style="margin-bottom:12px">Add Website</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Target URL</label>
+                <div class="input-row">
+                  <input class="input" id="siteUrl" placeholder="https://example.com/" type="url"
+                    onkeydown="if(event.key==='Enter')addWebsite()" />
+                  <button class="btn btn-primary" onclick="addWebsite()"><i data-lucide="plus"></i></button>
+                </div>
+              </div>
+              <p style="font-size:12px;color:var(--muted)">Sessions will pick a random URL from the list each time.</p>
+            </div>
+            <div class="card">
+              <div class="card-title" style="margin-bottom:12px">Website Stats</div>
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="color:var(--muted);font-size:13px">Target URLs in list</span>
+                <span id="websiteCount" style="font-weight:700;font-size:22px">—</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Website List</span>
+            </div>
+            <div id="websiteList"></div>
+          </div>
+        </div>
+
+        <!-- ── Settings tab ───────────────────────────────── -->
+        <div class="tab-panel" id="tab-settings">
+
+          <!-- ── Section: Automation Engine ── -->
+          <div class="settings-section-header">⚙️ Automation Engine</div>
+          <div class="settings-grid" style="margin-bottom:20px">
+
+            <div class="card">
+              <div class="settings-section-title">AdsPower Connection</div>
+              <div class="form-group" style="margin-bottom:12px">
+                <label class="form-label">API Base URL</label>
+                <input class="input" id="s-baseUrl" value="http://127.0.0.1:50325" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">API Key</label>
+                <input class="input" id="s-apiKey" type="password" placeholder="Paste your AdsPower API key" />
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="settings-section-title">Session Timing</div>
+              <div class="form-group" style="margin-bottom:14px">
+                <label class="form-label">Min session duration (s)</label>
+                <div class="range-row"><input type="range" id="s-minDur" min="10" max="300" step="5"
+                    oninput="v('s-minDurVal',this.value)" /><span class="range-val" id="s-minDurVal">50</span></div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Max session duration (s)</label>
+                <div class="range-row"><input type="range" id="s-maxDur" min="10" max="300" step="5"
+                    oninput="v('s-maxDurVal',this.value)" /><span class="range-val" id="s-maxDurVal">70</span></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="settings-section-title">Browser Concurrency</div>
+              <div class="form-group" style="margin-bottom:14px">
+                <label class="form-label">Min concurrent browsers</label>
+                <div class="range-row"><input type="range" id="s-minConc" min="1" max="10" step="1"
+                    oninput="v('s-minConcVal',this.value)" /><span class="range-val" id="s-minConcVal">3</span></div>
+              </div>
+              <div class="form-group" style="margin-bottom:14px">
+                <label class="form-label">Max concurrent browsers</label>
+                <div class="range-row"><input type="range" id="s-maxConc" min="1" max="15" step="1"
+                    oninput="v('s-maxConcVal',this.value)" /><span class="range-val" id="s-maxConcVal">5</span></div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Browser start gap (ms)</label>
+                <div class="range-row"><input type="range" id="s-gap" min="1000" max="15000" step="500"
+                    oninput="v('s-gapVal',this.value)" /><span class="range-val" id="s-gapVal">4000</span></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="settings-section-title">Proxy Sampling per OS</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+                <div style="color:var(--muted);font-size:11px;font-weight:600;text-align:center">OS</div>
+                <div style="color:var(--muted);font-size:11px;font-weight:600;text-align:center">Min</div>
+                <div style="color:var(--muted);font-size:11px;font-weight:600;text-align:center">Max</div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;align-items:center">
+                <span class="badge badge-windows">Windows</span>
+                <input class="input" id="s-win-min" type="number" min="0" max="50" value="5" />
+                <input class="input" id="s-win-max" type="number" min="0" max="50" value="15" />
+                <span class="badge badge-mac">Mac</span>
+                <input class="input" id="s-mac-min" type="number" min="0" max="50" value="2" />
+                <input class="input" id="s-mac-max" type="number" min="0" max="50" value="8" />
+                <span class="badge badge-android">Android</span>
+                <input class="input" id="s-and-min" type="number" min="0" max="50" value="3" />
+                <input class="input" id="s-and-max" type="number" min="0" max="50" value="12" />
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Section: Profile Creation ── -->
+          <div class="settings-section-header">👤 Profile Creation (AdsPower)</div>
+          <div class="settings-grid" style="margin-bottom:20px">
+
+            <!-- Basic -->
+            <div class="card">
+              <div class="settings-section-title">Basic</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Group ID <span style="color:var(--muted);font-size:10px">(0 =
+                    Ungrouped)</span></label>
+                <input class="input" id="s-groupId" value="0" placeholder="0" />
+              </div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">User-Agent <span style="color:var(--muted);font-size:10px">(blank = AdsPower
+                    auto)</span></label>
+                <input class="input" id="s-ua" placeholder="Mozilla/5.0 …" />
+              </div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Open Tabs (one URL per line)</label>
+                <textarea class="textarea" id="s-openUrls" style="min-height:70px"
+                  placeholder="https://example.com"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Cookie <span style="color:var(--muted);font-size:10px">(JSON / Netscape /
+                    Name=Value)</span></label>
+                <textarea class="textarea" id="s-cookie" style="min-height:70px"
+                  placeholder="Paste cookie string here"></textarea>
+              </div>
+            </div>
+
+            <!-- WebRTC -->
+            <div class="card">
+              <div class="settings-section-title">WebRTC</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">WebRTC Mode</label>
+                <select class="select" id="s-webrtc">
+                  <option value="forward">Forward (expose real IP)</option>
+                  <option value="proxy" selected>Proxy / Replace (recommended)</option>
+                  <option value="local">Local / Real IP</option>
+                  <option value="disabled">Disabled (block WebRTC)</option>
+                  <option value="disable_udp">Disable UDP</option>
+                </select>
+              </div>
+              <p style="font-size:11px;color:var(--muted);line-height:1.6">
+                <b>Forward</b> — expose real IP via WebRTC<br />
+                <b>Proxy</b> — replace with proxy IP (recommended)<br />
+                <b>Local</b> — expose real local IP<br />
+                <b>Disabled</b> — block WebRTC entirely<br />
+                <b>Disable UDP</b> — block UDP only
+              </p>
+            </div>
+
+            <!-- Timezone -->
+            <div class="card">
+              <div class="settings-section-title">Timezone</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Timezone Mode</label>
+                <select class="select" id="s-timezone"
+                  onchange="toggleCustom('s-customTimezone-row',this.value==='custom')">
+                  <option value="based-on-ip" selected>Based on IP</option>
+                  <option value="real">Real</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="form-group" id="s-customTimezone-row" style="display:none">
+                <label class="form-label">Custom Timezone</label>
+                <input class="input" id="s-customTimezone" placeholder="America/New_York" />
+              </div>
+            </div>
+
+            <!-- Location -->
+            <div class="card">
+              <div class="settings-section-title">Location (Geolocation)</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Location Mode</label>
+                <select class="select" id="s-location"
+                  onchange="toggleCustom('s-customLocation-row',this.value==='custom')">
+                  <option value="based-on-ip" selected>Based on IP</option>
+                  <option value="custom">Custom</option>
+                  <option value="block">Block</option>
+                </select>
+              </div>
+              <div id="s-customLocation-row" style="display:none">
+                <div class="input-row" style="margin-bottom:8px">
+                  <div class="form-group" style="flex:1">
+                    <label class="form-label">Latitude</label>
+                    <input class="input" id="s-lat" placeholder="40.7128" />
+                  </div>
+                  <div class="form-group" style="flex:1">
+                    <label class="form-label">Longitude</label>
+                    <input class="input" id="s-lng" placeholder="-74.0060" />
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Accuracy (m)</label>
+                  <input class="input" id="s-accuracy" placeholder="100" value="100" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Language -->
+            <div class="card">
+              <div class="settings-section-title">Language</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Language Mode</label>
+                <select class="select" id="s-language"
+                  onchange="toggleCustom('s-customLang-row',this.value==='custom')">
+                  <option value="based-on-ip" selected>Based on IP</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="form-group" id="s-customLang-row" style="display:none">
+                <label class="form-label">Languages (comma-separated)</label>
+                <input class="input" id="s-customLang" placeholder="en-US,en" value="en-US,en" />
+              </div>
+              <hr class="divider" />
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Display Language</label>
+                <select class="select" id="s-displayLanguage">
+                  <option value="based-on-language" selected>Based on Language</option>
+                  <option value="real">Real</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Screen Resolution -->
+            <div class="card">
+              <div class="settings-section-title">Screen Resolution</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Resolution Mode</label>
+                <select class="select" id="s-resolution"
+                  onchange="toggleCustom('s-customRes-row',this.value==='custom')">
+                  <option value="random" selected>Random</option>
+                  <option value="predefined">Predefined</option>
+                  <option value="custom">Custom</option>
+                  <option value="based-on-ua">Based on User-Agent</option>
+                </select>
+              </div>
+              <div class="form-group" id="s-customRes-row" style="display:none">
+                <label class="form-label">Custom Resolution</label>
+                <select class="select" id="s-customResVal">
+                  <option>1920x1080</option>
+                  <option>1440x900</option>
+                  <option>1366x768</option>
+                  <option>1280x800</option>
+                  <option>1600x900</option>
+                  <option>1280x1024</option>
+                  <option>2560x1440</option>
+                  <option>1024x768</option>
+                </select>
+              </div>
+              <hr class="divider" />
+              <div class="settings-section-title">Fonts</div>
+              <div class="form-group">
+                <label class="form-label">Font Mode</label>
+                <select class="select" id="s-fonts">
+                  <option value="default" selected>Default</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- ── Section: Fingerprint / Noise ── -->
+          <div class="settings-section-header">🔒 Fingerprint &amp; Noise</div>
+          <div class="settings-grid" style="margin-bottom:20px">
+
+            <!-- Hardware Noise -->
+            <div class="card">
+              <div class="settings-section-title">Hardware Noise</div>
+              <div style="display:flex;flex-direction:column;gap:10px">
+                <label class="check-row"><input type="checkbox" id="s-canvas" checked /> Canvas fingerprint
+                  noise</label>
+                <label class="check-row"><input type="checkbox" id="s-webglImg" checked /> WebGL Image noise</label>
+                <label class="check-row"><input type="checkbox" id="s-audio" checked /> AudioContext noise</label>
+                <label class="check-row"><input type="checkbox" id="s-media" checked /> Media device noise</label>
+                <label class="check-row"><input type="checkbox" id="s-clientRects" checked /> ClientRects noise</label>
+                <label class="check-row"><input type="checkbox" id="s-speechVoices" checked /> SpeechVoices
+                  noise</label>
+              </div>
+            </div>
+
+            <!-- WebGL Metadata -->
+            <div class="card">
+              <div class="settings-section-title">WebGL Metadata</div>
+              <div class="form-group" style="margin-bottom:10px">
+                <label class="form-label">Mode</label>
+                <select class="select" id="s-webglMeta"
+                  onchange="toggleCustom('s-webglMeta-row',this.value==='custom')">
+                  <option value="real">Real</option>
+                  <option value="custom" selected>Custom</option>
+                </select>
+              </div>
+              <div id="s-webglMeta-row">
+                <div class="form-group" style="margin-bottom:10px">
+                  <label class="form-label">Vendor</label>
+                  <input class="input" id="s-webglVendor" value="Google Inc. (Intel)" />
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Renderer</label>
+                  <input class="input" id="s-webglRenderer"
+                    value="ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)" />
+                </div>
+              </div>
+            </div>
+
+            <!-- WebGPU -->
+            <div class="card">
+              <div class="settings-section-title">WebGPU</div>
+              <div class="form-group" style="margin-bottom:14px">
+                <label class="form-label">WebGPU Mode</label>
+                <select class="select" id="s-webgpu">
+                  <option value="based-on-webgl" selected>Based on WebGL</option>
+                  <option value="real">Real</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </div>
+              <hr class="divider" />
+              <div class="settings-section-title">Random Fingerprint</div>
+              <label class="check-row">
+                <input type="checkbox" id="s-randomFp" />
+                Enable random fingerprint on each startup
+              </label>
+              <p style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">New fingerprint will be
+                randomly generated on each startup, ignoring some existing settings.</p>
+            </div>
+
+          </div>
+
+          <div style="display:flex;justify-content:flex-end;margin-top:4px">
+            <button class="btn btn-primary" onclick="saveSettings()">
+              <i data-lucide="save"></i> Save Settings
+            </button>
+          </div>
+        </div>
+
+      </div><!-- /content -->
+    </div><!-- /main -->
+  </div><!-- /shell -->
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toasts"></div>
+
+  <script>
+    // ── Auth bootstrap ────────────────────────────────────────────────────────────
+    (function checkAuth() {
+      const token = localStorage.getItem('ads_access_token');
+      console.log('Auth Check:', token ? 'Token exists' : 'No token found');
+      if (!token) {
+        console.warn('Dashboard: No token, redirecting to /login');
+        clearAuthAndRedirect();
+      } else {
+        // Show user email
+        const email = localStorage.getItem('ads_user_email');
+        if (email) setTimeout(() => {
+          const el = document.getElementById('userEmail');
+          if (el) el.textContent = email;
+        }, 0);
+      }
+    })();
+
+    function clearAuthAndRedirect() {
+      localStorage.removeItem('ads_access_token');
+      localStorage.removeItem('ads_refresh_token');
+      localStorage.removeItem('ads_token_expiry');
+      localStorage.removeItem('ads_user_email');
+      window.location.href = '/login';
+    }
+
+    // ── Global fetch interceptor — attach Bearer token to all API calls ────────────
+    const _origFetch = window.fetch;
+    window.fetch = async (url, opts = {}) => {
+      const token = localStorage.getItem('ads_access_token');
+      if (token && (typeof url === 'string' ? url.startsWith('/api/') : false)) {
+        opts = { ...opts, headers: { ...(opts.headers || {}), 'Authorization': `Bearer ${token}` } };
+      }
+      const res = await _origFetch(url, opts);
+      if (res.status === 401) {
+        // Try to refresh first
+        const refresh = localStorage.getItem('ads_refresh_token');
+        if (refresh) {
+          const rd = await _origFetch('/api/auth/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refresh_token: refresh })
+          }).then(r => r.json()).catch(() => null);
+          if (rd?.ok) {
+            localStorage.setItem('ads_access_token', rd.access_token);
+            localStorage.setItem('ads_refresh_token', rd.refresh_token);
+            localStorage.setItem('ads_token_expiry', String(Date.now() + rd.expires_in * 1000));
+            // Retry original request
+            opts.headers['Authorization'] = `Bearer ${rd.access_token}`;
+            return _origFetch(url, opts);
+          }
+        }
+        clearAuthAndRedirect();
+      }
+      return res;
+    };
+
+    // ── Init ──────────────────────────────────────────────────────────────────────
+    lucide.createIcons();
+
+    // Set user email in sidebar
+    const _userEmail = localStorage.getItem('ads_user_email');
+    const _userEmailEl = document.getElementById('userEmail');
+    if (_userEmailEl && _userEmail) _userEmailEl.textContent = _userEmail;
+
+    let currentTab = 'dashboard';
+    let proxies = [];
+    let websites = [];
+    let settings = {};
+
+    // ── Tab switching ─────────────────────────────────────────────────────────────
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      document.getElementById('tab-' + tab).classList.add('active');
+      document.querySelectorAll('.nav-item')[['dashboard', 'proxies', 'websites', 'settings'].indexOf(tab)].classList.add('active');
+      document.getElementById('pageTitle').textContent = { dashboard: 'Dashboard', proxies: 'Proxies', websites: 'Websites', settings: 'Settings' }[tab];
+      currentTab = tab;
+      if (tab === 'proxies') loadProxies();
+      if (tab === 'websites') loadWebsites();
+      if (tab === 'settings') loadSettings();
+    }
+
+    // ── Toast ─────────────────────────────────────────────────────────────────────
+    function toast(msg, type = 'info') {
+      const t = document.createElement('div');
+      t.className = `toast ${type}`;
+      t.innerHTML = `<i data-lucide="${type === 'success' ? 'check-circle' : type === 'error' ? 'x-circle' : 'info'}"></i> ${msg}`;
+      document.getElementById('toasts').appendChild(t);
+      lucide.createIcons();
+      setTimeout(() => t.remove(), 3500);
+    }
+
+    // ── Status polling ────────────────────────────────────────────────────────────
+    async function updateStatus() {
+      try {
+        const s = await fetch('/api/stats').then(r => r.json());
+        document.getElementById('s-total').textContent = s.totalProxies;
+        document.getElementById('s-used').textContent = s.usedProxies;
+        document.getElementById('s-fresh').textContent = s.freshProxies;
+        document.getElementById('s-sites').textContent = s.websites;
+        document.getElementById('s-fresh-sub').textContent = `${s.freshProxies} fresh`;
+        const pct = s.totalProxies ? Math.round(s.usedProxies / s.totalProxies * 100) : 0;
+        document.getElementById('s-pct').textContent = `${pct}% consumed`;
+
+        const pill = document.getElementById('statusPill');
+        const dot = document.getElementById('statusDot');
+        const txt = document.getElementById('statusText');
+        const runBtn = document.getElementById('runBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        if (s.running) {
+          pill.className = 'status-pill running';
+          dot.className = 'dot pulse';
+          txt.textContent = 'Running';
+          runBtn.style.display = 'none';
+          stopBtn.style.display = '';
+        } else {
+          pill.className = 'status-pill idle';
+          dot.className = 'dot';
+          txt.textContent = 'Idle';
+          runBtn.style.display = '';
+          stopBtn.style.display = 'none';
+        }
+      } catch (_) { }
+    }
+    setInterval(updateStatus, 2000);
+    updateStatus();
+
+    // ── Log SSE ───────────────────────────────────────────────────────────────────
+    const logBox = document.getElementById('logBox');
+    let logEmpty = true;
+
+    const _sseToken = localStorage.getItem('ads_access_token') || '';
+    const sse = new EventSource('/api/logs?token=' + encodeURIComponent(_sseToken));
+    sse.onmessage = ev => {
+      const { line } = JSON.parse(ev.data);
+      if (logEmpty) { logBox.innerHTML = ''; logEmpty = false; }
+      const div = document.createElement('div');
+      div.className = 'log-line' + (
+        line.includes('[INFO]') ? ' info' :
+          line.includes('[WARN]') ? ' warn' :
+            line.includes('[ERROR]') ? ' error' :
+              line.includes('[DEBUG]') ? ' debug' :
+                line.includes('===') ? ' success' : ''
+      );
+      div.textContent = line;
+      logBox.appendChild(div);
+      logBox.scrollTop = logBox.scrollHeight;
+    };
+
+    function clearLogs() { logBox.innerHTML = '<span class="log-empty">Cleared.</span>'; logEmpty = true; }
+
+    // ── Run / Stop ────────────────────────────────────────────────────────────────
+    async function startRun() {
+      const r = await fetch('/api/run', { method: 'POST' }).then(r => r.json()).catch(e => ({ error: e.message }));
+      if (r.error) toast(r.error, 'error');
+      else { toast('Automation started!', 'success'); updateStatus(); switchTab('dashboard'); }
+    }
+
+    async function stopRun() {
+      await fetch('/api/stop', { method: 'POST' });
+      toast('Stopping automation…', 'info');
+      updateStatus();
+    }
+
+    // ── Proxies ───────────────────────────────────────────────────────────────────
+    async function loadProxies() {
+      proxies = await fetch('/api/proxies').then(r => r.json());
+      renderProxyTable();
+      updateProxyStats();
+    }
+
+    function updateProxyStats() {
+      document.getElementById('proxyCount').textContent = proxies.length;
+      document.getElementById('px-win-count').textContent = proxies.filter(p => p.os === 'windows').length;
+      document.getElementById('px-mac-count').textContent = proxies.filter(p => p.os === 'mac').length;
+      document.getElementById('px-and-count').textContent = proxies.filter(p => p.os === 'android').length;
+      const fresh = proxies.filter(p => !p.used).length;
+      const used = proxies.filter(p => p.used).length;
+      document.getElementById('px-fresh-badge').textContent = fresh + ' fresh';
+      document.getElementById('px-used-badge').textContent = used + ' used';
+      document.getElementById('px-table-count').textContent = `(${proxies.length})`;
+    }
+
+    function renderProxyTable() {
+      const tbody = document.getElementById('proxyTableBody');
+      if (!proxies.length) {
+        tbody.innerHTML = '<tr><td colspan="8"><div class="empty-state"><i data-lucide="server-off"></i><p>No proxies — add some above</p></div></td></tr>';
+        lucide.createIcons(); return;
+      }
+      tbody.innerHTML = proxies.map((p, i) => `
+    <tr>
+      <td><input type="checkbox" class="proxy-check" data-key="${escHtml(p.key)}" /></td>
+      <td style="font-family:monospace;font-size:12px">${escHtml(p.host)}</td>
+      <td>${p.port}</td>
+      <td style="font-family:monospace;font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(p.user)}</td>
+      <td><span class="badge ${p.protocol === 'socks5' ? 'badge-socks5' : 'badge-http'}">${p.protocol}</span></td>
+      <td><span class="badge badge-${p.os}">${p.os}</span></td>
+      <td><span class="badge ${p.used ? 'badge-used' : 'badge-fresh'}">${p.used ? 'used' : 'fresh'}</span></td>
+      <td><button class="btn btn-danger btn-sm" onclick="deleteProxy('${escHtml(p.key)}')"><i data-lucide="trash-2"></i></button></td>
+    </tr>
+  `).join('');
+      lucide.createIcons();
+    }
+
+    function toggleSelectAll(cb) {
+      document.querySelectorAll('.proxy-check').forEach(c => c.checked = cb.checked);
+    }
+
+    async function addProxies() {
+      const bulk = document.getElementById('proxyBulk').value.trim();
+      const entries = [];
+
+      if (bulk) {
+        bulk.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => entries.push(l));
+      } else {
+        const host = document.getElementById('px-host').value.trim();
+        const port = parseInt(document.getElementById('px-port').value);
+        const user = document.getElementById('px-user').value.trim();
+        const pass = document.getElementById('px-pass').value.trim();
+        const proto = document.getElementById('px-proto').value;
+        const os = document.getElementById('px-os').value;
+        if (!host || !port || !user || !pass) { toast('Fill in all proxy fields', 'error'); return; }
+        entries.push({ host, port, user, pass, protocol: proto, os });
+      }
+
+      if (!entries.length) { toast('No proxies to add', 'error'); return; }
+
+      const r = await fetch('/api/proxies/add', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entries })
+      }).then(r => r.json());
+
+      toast(`Added ${r.added} proxy/proxies`, r.added > 0 ? 'success' : 'info');
+      document.getElementById('proxyBulk').value = '';
+      ['px-host', 'px-port', 'px-user', 'px-pass'].forEach(id => document.getElementById(id).value = '');
+      loadProxies();
+      updateStatus();
+    }
+
+    async function deleteProxy(key) {
+      await fetch('/api/proxies', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys: [key] })
+      });
+      toast('Proxy deleted', 'info');
+      loadProxies(); updateStatus();
+    }
+
+    async function deleteSelectedProxies() {
+      const keys = [...document.querySelectorAll('.proxy-check:checked')].map(c => c.dataset.key);
+      if (!keys.length) { toast('Select proxies to delete', 'error'); return; }
+      await fetch('/api/proxies', {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys })
+      });
+      toast(`Deleted ${keys.length} proxy/proxies`, 'success');
+      document.getElementById('selectAll').checked = false;
+      loadProxies(); updateStatus();
+    }
+
+    // ── Used proxies ──────────────────────────────────────────────────────────────
+    async function clearUsed() {
+      if (!confirm('Reset all used proxies? They will be eligible for re-use.')) return;
+      await fetch('/api/used-proxies', { method: 'DELETE' });
+      toast('Used proxies cleared', 'success');
+      updateStatus();
+      if (currentTab === 'proxies') loadProxies();
+    }
+
+    // ── Websites ──────────────────────────────────────────────────────────────────
+    async function loadWebsites() {
+      websites = await fetch('/api/websites').then(r => r.json());
+      renderWebsites();
+    }
+
+    function renderWebsites() {
+      document.getElementById('websiteCount').textContent = websites.length;
+      const el = document.getElementById('websiteList');
+      if (!websites.length) {
+        el.innerHTML = '<div class="empty-state"><i data-lucide="link-off"></i><p>No websites added yet</p></div>';
+        lucide.createIcons(); return;
+      }
+      el.innerHTML = websites.map((url, i) => `
+    <div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+      <i data-lucide="globe" style="width:15px;height:15px;color:var(--blue);flex-shrink:0"></i>
+      <span style="flex:1;font-family:monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(url)}</span>
+      <button class="btn btn-danger btn-sm" onclick="deleteWebsite(${i})"><i data-lucide="trash-2"></i></button>
+    </div>
+  `).join('');
+      lucide.createIcons();
+    }
+
+    async function addWebsite() {
+      const url = document.getElementById('siteUrl').value.trim();
+      if (!url) { toast('Enter a URL', 'error'); return; }
+      const r = await fetch('/api/websites/add', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      }).then(r => r.json());
+      document.getElementById('siteUrl').value = '';
+      toast('Website added', 'success');
+      loadWebsites(); updateStatus();
+    }
+
+    async function deleteWebsite(idx) {
+      await fetch(`/api/websites/${idx}`, { method: 'DELETE' });
+      toast('Website removed', 'info');
+      loadWebsites(); updateStatus();
+    }
+
+    // ── Settings helpers ──────────────────────────────────────────────────────────
+    function v(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
+    function toggleCustom(rowId, show) { const el = document.getElementById(rowId); if (el) el.style.display = show ? '' : 'none'; }
+    function sel(id, val) { const el = document.getElementById(id); if (el) el.value = val; }
+    function chk(id, val) { const el = document.getElementById(id); if (el) el.checked = !!val; }
+    function gv(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+    function gc(id) { const el = document.getElementById(id); return el ? el.checked : false; }
+
+    // ── Settings ──────────────────────────────────────────────────────────────────
+    async function loadSettings() {
+      settings = await fetch('/api/settings').then(r => r.json());
+      const fp = settings.fingerprint || {};
+
+      // Engine
+      document.getElementById('s-baseUrl').value = settings.adsPower?.baseUrl || '';
+      document.getElementById('s-apiKey').value = settings.adsPower?.apiKey || '';
+      setRange('s-minDur', settings.session?.minDurationSeconds ?? 50);
+      setRange('s-maxDur', settings.session?.maxDurationSeconds ?? 70);
+      setRange('s-minConc', settings.concurrency?.min ?? 3);
+      setRange('s-maxConc', settings.concurrency?.max ?? 5);
+      setRange('s-gap', settings.minBrowserStartGapMs ?? 4000);
+      document.getElementById('s-win-min').value = settings.proxySampling?.windows?.min ?? 5;
+      document.getElementById('s-win-max').value = settings.proxySampling?.windows?.max ?? 15;
+      document.getElementById('s-mac-min').value = settings.proxySampling?.mac?.min ?? 2;
+      document.getElementById('s-mac-max').value = settings.proxySampling?.mac?.max ?? 8;
+      document.getElementById('s-and-min').value = settings.proxySampling?.android?.min ?? 3;
+      document.getElementById('s-and-max').value = settings.proxySampling?.android?.max ?? 12;
+
+      // Profile basic
+      sel('s-groupId', settings.groupId || '0');
+      sel('s-ua', fp.userAgent || '');
+      sel('s-cookie', settings.cookie || '');
+      document.getElementById('s-openUrls').value = Array.isArray(settings.openUrls) ? settings.openUrls.join('\n') : '';
+
+      // WebRTC — normalize old UI values to AdsPower API values
+      const webrtcNorm = { replace: 'proxy', real: 'local' };
+      const rawWr = fp.webrtc || 'proxy';
+      sel('s-webrtc', webrtcNorm[rawWr] || rawWr);
+
+      // Timezone
+      const tz = fp.timezone || 'based-on-ip';
+      sel('s-timezone', tz);
+      toggleCustom('s-customTimezone-row', tz === 'custom');
+      sel('s-customTimezone', fp.customTimezone || '');
+
+      // Location
+      const loc = fp.location || 'based-on-ip';
+      sel('s-location', loc);
+      toggleCustom('s-customLocation-row', loc === 'custom');
+      sel('s-lat', fp.customLatitude || '');
+      sel('s-lng', fp.customLongitude || '');
+      sel('s-accuracy', fp.customAccuracy || '100');
+
+      // Language
+      const lang = fp.language || 'based-on-ip';
+      sel('s-language', lang);
+      toggleCustom('s-customLang-row', lang === 'custom');
+      sel('s-customLang', fp.customLanguage || 'en-US,en');
+      sel('s-displayLanguage', fp.displayLanguage || 'based-on-language');
+
+      // Screen / Fonts
+      const res = fp.screenResolution || 'random';
+      sel('s-resolution', res);
+      toggleCustom('s-customRes-row', res === 'custom');
+      sel('s-customResVal', fp.customResolution || '1920x1080');
+      sel('s-fonts', fp.fonts || 'default');
+
+      // Noise toggles
+      chk('s-canvas', fp.canvasNoise !== false);
+      chk('s-webglImg', fp.webglNoise !== false);
+      chk('s-audio', fp.audioNoise !== false);
+      chk('s-media', fp.mediaDevicesNoise !== false);
+      chk('s-clientRects', fp.clientRectsNoise !== false);
+      chk('s-speechVoices', fp.speechVoicesNoise !== false);
+
+      // WebGL metadata
+      const wglMeta = fp.webglMetadata || 'custom';
+      sel('s-webglMeta', wglMeta);
+      toggleCustom('s-webglMeta-row', wglMeta === 'custom');
+      sel('s-webglVendor', fp.webglVendor || 'Google Inc. (Intel)');
+      sel('s-webglRenderer', fp.webglRenderer || 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)');
+
+      // WebGPU + random fp
+      sel('s-webgpu', fp.webgpu || 'based-on-webgl');
+      chk('s-randomFp', fp.randomFingerprint || false);
+    }
+
+    function setRange(id, val) {
+      const el = document.getElementById(id);
+      if (el) el.value = val;
+      const valEl = document.getElementById(id + 'Val');
+      if (valEl) valEl.textContent = val;
+    }
+
+    async function saveSettings() {
+      const openUrlsRaw = gv('s-openUrls').trim();
+      const payload = {
+        adsPower: {
+          baseUrl: gv('s-baseUrl').trim(),
+          apiKey: gv('s-apiKey').trim(),
+        },
+        proxySampling: {
+          windows: { min: +gv('s-win-min'), max: +gv('s-win-max') },
+          mac: { min: +gv('s-mac-min'), max: +gv('s-mac-max') },
+          android: { min: +gv('s-and-min'), max: +gv('s-and-max') },
+        },
+        concurrency: { min: +gv('s-minConc'), max: +gv('s-maxConc') },
+        minBrowserStartGapMs: +gv('s-gap'),
+        session: {
+          minDurationSeconds: +gv('s-minDur'),
+          maxDurationSeconds: +gv('s-maxDur'),
+          clickProbability: settings.session?.clickProbability ?? 0.35,
+        },
+        groupId: gv('s-groupId'),
+        cookie: gv('s-cookie').trim(),
+        openUrls: openUrlsRaw ? openUrlsRaw.split('\n').map(u => u.trim()).filter(Boolean) : [],
+        fingerprint: {
+          userAgent: gv('s-ua').trim(),
+          webrtc: gv('s-webrtc'),
+          timezone: gv('s-timezone'),
+          customTimezone: gv('s-customTimezone').trim(),
+          location: gv('s-location'),
+          customLatitude: gv('s-lat').trim(),
+          customLongitude: gv('s-lng').trim(),
+          customAccuracy: gv('s-accuracy').trim(),
+          language: gv('s-language'),
+          customLanguage: gv('s-customLang').trim(),
+          displayLanguage: gv('s-displayLanguage'),
+          screenResolution: gv('s-resolution'),
+          customResolution: gv('s-customResVal'),
+          fonts: gv('s-fonts'),
+          canvasNoise: gc('s-canvas'),
+          webglNoise: gc('s-webglImg'),
+          audioNoise: gc('s-audio'),
+          mediaDevicesNoise: gc('s-media'),
+          clientRectsNoise: gc('s-clientRects'),
+          speechVoicesNoise: gc('s-speechVoices'),
+          webglMetadata: gv('s-webglMeta'),
+          webglVendor: gv('s-webglVendor').trim(),
+          webglRenderer: gv('s-webglRenderer').trim(),
+          webgpu: gv('s-webgpu'),
+          randomFingerprint: gc('s-randomFp'),
+        },
+      };
+      const r = await fetch('/api/settings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(r => r.json());
+      toast('Settings saved!', r.saved ? 'success' : 'error');
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────────
+    function escHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // ── Auth ─────────────────────────────────────────────────────────────────────
+    async function logout() {
+      await fetch('/api/auth/logout', { method: 'POST' }).catch(() => { });
+      clearAuthAndRedirect();
+    }
+  </script>
+</body>
+
+</html>

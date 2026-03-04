@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AdsPower — Sign In</title>
+    <meta name="description" content="Sign in to the AdsPower Automation Dashboard" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet" />
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #080812;
+            --surface: rgba(255, 255, 255, 0.05);
+            --border: rgba(255, 255, 255, 0.10);
+            --primary: #7c3aed;
+            --primary2: #5b21b6;
+            --blue: #3b82f6;
+            --green: #10b981;
+            --red: #ef4444;
+            --text: #e2e8f0;
+            --muted: #64748b;
+        }
+
+        html,
+        body {
+            height: 100%;
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+        }
+
+        /* Animated background orbs */
+        body::before,
+        body::after {
+            content: '';
+            position: fixed;
+            border-radius: 50%;
+            filter: blur(120px);
+            opacity: 0.18;
+            pointer-events: none;
+            animation: drift 12s ease-in-out infinite alternate;
+        }
+
+        body::before {
+            width: 600px;
+            height: 600px;
+            background: var(--primary);
+            top: -150px;
+            left: -150px;
+        }
+
+        body::after {
+            width: 500px;
+            height: 500px;
+            background: var(--blue);
+            bottom: -100px;
+            right: -100px;
+            animation-delay: -6s;
+        }
+
+        @keyframes drift {
+            from {
+                transform: translate(0, 0) scale(1);
+            }
+
+            to {
+                transform: translate(40px, 30px) scale(1.08);
+            }
+        }
+
+        .page {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .card {
+            width: 100%;
+            max-width: 420px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 40px 36px;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(124, 58, 237, 0.1);
+            animation: slideUp .35s cubic-bezier(.16, 1, .3, 1);
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(24px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 32px;
+        }
+
+        .logo-icon {
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--primary), var(--blue));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 8px 25px rgba(124, 58, 237, .4);
+        }
+
+        .logo-text {
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: -.3px;
+        }
+
+        .logo-sub {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        h1 {
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: -.5px;
+            margin-bottom: 6px;
+        }
+
+        .subtitle {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--muted);
+            margin-bottom: 7px;
+            letter-spacing: .3px;
+            text-transform: uppercase;
+        }
+
+        .input {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 14px;
+            padding: 11px 14px;
+            outline: none;
+            transition: border-color .15s, box-shadow .15s;
+        }
+
+        .input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(124, 58, 237, .18);
+        }
+
+        .input::placeholder {
+            color: var(--muted);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border-radius: 10px;
+            border: none;
+            background: linear-gradient(135deg, var(--primary), #6d28d9);
+            color: #fff;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity .15s, transform .15s, box-shadow .15s;
+            margin-top: 8px;
+            box-shadow: 0 4px 20px rgba(124, 58, 237, .4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn:hover {
+            opacity: .92;
+            transform: translateY(-1px);
+            box-shadow: 0 8px 28px rgba(124, 58, 237, .5);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            opacity: .55;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, .3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin .6s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .error-box {
+            display: none;
+            background: rgba(239, 68, 68, .12);
+            border: 1px solid rgba(239, 68, 68, .3);
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 13px;
+            color: #f87171;
+            margin-bottom: 16px;
+            animation: shake .3s ease;
+        }
+
+        @keyframes shake {
+
+            0%,
+            100% {
+                transform: translateX(0)
+            }
+
+            25% {
+                transform: translateX(-6px)
+            }
+
+            75% {
+                transform: translateX(6px)
+            }
+        }
+
+        .footer-link {
+            text-align: center;
+            color: var(--muted);
+            font-size: 13px;
+            margin-top: 24px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+        }
+
+        .footer-link a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .footer-link a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="page">
+        <div class="card">
+            <div class="logo">
+                <div class="logo-icon">🤖</div>
+                <div>
+                    <div class="logo-text">AdsPower</div>
+                    <div class="logo-sub">Automation Dashboard</div>
+                </div>
+            </div>
+
+            <h1>Welcome back</h1>
+            <p class="subtitle">Sign in to access the automation dashboard.</p>
+
+            <div class="error-box" id="errorBox">Invalid email or password. Please try again.</div>
+
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label class="form-label" for="email">Email</label>
+                    <input class="input" id="email" name="email" type="text" placeholder="you@example.com"
+                        autocomplete="email" required />
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="password">Password</label>
+                    <input class="input" id="password" name="password" type="password" placeholder="••••••••"
+                        autocomplete="current-password" required />
+                </div>
+
+                <button class="btn" type="submit" id="submitBtn">
+                    <span class="spinner" id="spinner"></span>
+                    <span id="btnText">Sign In</span>
+                </button>
+            </form>
+
+            <div class="footer-link">
+                Don't have an account? <a href="/signup">Create account</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // If already logged in, redirect to dashboard
+        (function () {
+            const token = localStorage.getItem('ads_access_token');
+            const exp = parseInt(localStorage.getItem('ads_token_expiry') || '0', 10);
+            const now = Date.now();
+            console.log('Login Page Check:', { tokenPresent: !!token, expiresAt: new Date(exp).toLocaleString() });
+
+            if (token && now < exp) {
+                console.log('Login Page: Valid token found, redirecting to dashboard /');
+                window.location.href = '/';
+            } else if (token) {
+                console.warn('Login Page: Token found but expired, clearing storage.');
+                localStorage.clear();
+            }
+        })();
+
+        async function handleLogin(e) {
+            e.preventDefault();
+
+            const email = document.getElementById('email').value.trim();
+            const password = document.getElementById('password').value;
+            const errorBox = document.getElementById('errorBox');
+            const btn = document.getElementById('submitBtn');
+            const spinner = document.getElementById('spinner');
+            const btnText = document.getElementById('btnText');
+
+            errorBox.style.display = 'none';
+            btn.disabled = true;
+            spinner.style.display = 'block';
+            btnText.textContent = 'Signing in…';
+
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password }),
+                });
+                const data = await res.json();
+
+                if (data.ok) {
+                    // Store JWT tokens in localStorage
+                    localStorage.setItem('ads_access_token', data.access_token);
+                    localStorage.setItem('ads_refresh_token', data.refresh_token);
+                    localStorage.setItem('ads_token_expiry', String(Date.now() + data.expires_in * 1000));
+                    localStorage.setItem('ads_user_email', data.user.email);
+
+                    btnText.textContent = 'Success!';
+                    await new Promise(r => setTimeout(r, 400));
+                    window.location.href = '/';
+                } else {
+                    const msg = data.error || 'Invalid email or password.';
+                    errorBox.textContent = msg;
+                    errorBox.style.display = 'block';
+                    btn.disabled = false;
+                    spinner.style.display = 'none';
+                    btnText.textContent = 'Sign In';
+                    errorBox.style.animation = 'none';
+                    void errorBox.offsetWidth;
+                    errorBox.style.animation = '';
+                }
+            } catch (_) {
+                errorBox.textContent = 'Network error — is the server running?';
+                errorBox.style.display = 'block';
+                btn.disabled = false;
+                spinner.style.display = 'none';
+                btnText.textContent = 'Sign In';
+            }
+        }
+
+        document.getElementById('email').focus();
+    </script>
+</body>
+
+</html>
