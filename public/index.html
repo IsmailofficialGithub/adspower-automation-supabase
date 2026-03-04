@@ -1464,7 +1464,8 @@
         }
       } catch (_) { }
     }
-    setInterval(updateStatus, 2000);
+    // Poll stats every 10 seconds (to stay within Supabase limits)
+    setInterval(updateStatus, 10000);
     updateStatus();
 
     // ── Log SSE ───────────────────────────────────────────────────────────────────
