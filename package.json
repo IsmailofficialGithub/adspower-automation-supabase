@@ -2,10 +2,54 @@
   "name": "adspower-automation",
   "version": "1.0.0",
   "description": "AdsPower browser profile automation with realistic human behaviour simulation.",
-  "main": "index.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node index.js",
-    "dashboard": "node server.js"
+    "dashboard": "node server.js",
+    "electron:dev": "electron .",
+    "electron:build": "electron-builder --win --x64",
+    "make-icon": "node scripts/make-icon.mjs"
+  },
+  "build": {
+    "appId": "com.adspower.automation",
+    "productName": "Money Money Money",
+    "copyright": "Copyright © 2025",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "electron/assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "files": [
+      "electron/**/*",
+      "public/**/*",
+      "utils/**/*",
+      "data/**/*",
+      "index.js",
+      "server.js",
+      "config.js",
+      "package.json",
+      ".env",
+      "node_modules/**/*",
+      "!node_modules/.cache/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "data",
+        "to": "data",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.98.0",
@@ -15,7 +59,13 @@
     "http-proxy-agent": "^7.0.2",
     "https-proxy-agent": "^7.0.6",
     "puppeteer-core": "^22.12.0",
-    "socks-proxy-agent": "^8.0.5"
+    "socks-proxy-agent": "^8.0.5",
+    "wait-on": "^9.0.4"
+  },
+  "devDependencies": {
+    "electron": "^40.7.0",
+    "electron-builder": "^26.8.1",
+    "png-to-ico": "^3.0.1"
   },
   "engines": {
     "node": ">=18.0.0"

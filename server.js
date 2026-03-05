@@ -10,34 +10,79 @@ require('dotenv').config();
 
 const express = require('express');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, fork } = require('child_process');
+const axios = require('axios');
+const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
+
+// ─── Helpers: Local JSON Storage ─────────────────────────────────────────────
+// Use USER_DATA_PATH if passed (production), otherwise fallback to local data/
+const DATA_DIR = process.env.USER_DATA_PATH
+    ? path.join(process.env.USER_DATA_PATH, 'data')
+    : path.join(__dirname, 'data');
+
+if (!fs.existsSync(DATA_DIR)) {
+    try {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+    } catch (err) {
+        console.error(`[storage] Failed to create data dir: ${err.message}`);
+    }
+}
+
+const DEFAULT_PATHS = {
+    settings: path.join(DATA_DIR, 'settings.json'),
+    proxies: path.join(DATA_DIR, 'proxy.json'),
+    usedProxies: path.join(DATA_DIR, 'used_proxies.json'),
+    websites: path.join(DATA_DIR, 'websites.json'),
+    logs: path.join(DATA_DIR, 'logs.json'),
+};
+
+
+function loadJsonFile(filePath) {
+    if (!fs.existsSync(filePath)) return [];
+    try {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        return JSON.parse(raw);
+    } catch (_) {
+        return [];
+    }
+}
+
+function saveJsonFile(filePath, data) {
+    try {
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    } catch (err) {
+        console.error(`[storage] Failed to save ${filePath}: ${err.message}`);
+    }
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── Supabase clients ─────────────────────────────────────────────────────────
+// ─── Local Mode Check ────────────────────────────────────────────────────────
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_KEY) {
-    console.error('\n❌  Missing Supabase environment variables.');
-    console.error('    Please copy .env and fill in your SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY\n');
-    process.exit(1);
+const IS_LOCAL_MODE = !SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_KEY;
+
+if (IS_LOCAL_MODE) {
+    console.warn('\n⚠️  Supabase environment variables missing. RUNNING IN LOCAL MODE.');
+    console.warn('    Local storage (JSON) will be used instead of Supabase.\n');
 }
 
-// Service-role client for server-side DB operations (bypasses RLS on service operations but we use user client for RLS)
-const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+// ─── Supabase clients ─────────────────────────────────────────────────────────
+// (Only initialize if not in local mode)
+const supabaseAdmin = IS_LOCAL_MODE ? null : createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
     db: { schema: 'public' },
     auth: { autoRefreshToken: false, persistSession: false }
 });
 
-// Anon client for verifying user JWTs
-const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+const supabaseAnon = IS_LOCAL_MODE ? null : createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     db: { schema: 'public' },
     auth: { autoRefreshToken: false, persistSession: false }
 });
+
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
 /**
@@ -45,23 +90,27 @@ const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
  * Attaches req.user (Supabase user object) and req.supabase (user-scoped client)
  */
 async function requireAuth(req, res, next) {
+    if (IS_LOCAL_MODE) {
+        req.user = { id: 'local-user', email: 'local@automation.internal' };
+        req.supabase = null; // Should not be used in local mode
+        return next();
+    }
+
     const authHeader = req.headers['authorization'] || '';
     const token = authHeader.startsWith('Bearer ')
         ? authHeader.slice(7)
-        : (req.query.token || null); // Allow token via query param (for SSE EventSource)
+        : (req.query.token || null);
 
     if (!token) {
         return res.status(401).json({ error: 'Unauthorized — missing token' });
     }
 
-    // Verify token with Supabase
     const { data: { user }, error } = await supabaseAnon.auth.getUser(token);
     if (error || !user) {
         return res.status(401).json({ error: 'Unauthorized — invalid token' });
     }
 
     req.user = user;
-    // Create a user-scoped Supabase client (RLS enforced automatically)
     req.supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         db: { schema: 'public' },
         global: { headers: { Authorization: `Bearer ${token}` } },
@@ -181,8 +230,68 @@ function normalizeProxy(entry) {
     return null;
 }
 
+// ─── Settings Defaults ───────────────────────────────────────────────────────
+const DEFAULT_SETTINGS = {
+    adsPower: { baseUrl: 'http://127.0.0.1:50325', apiKey: '' },
+    proxySampling: { windows: { min: 5, max: 15 }, mac: { min: 2, max: 8 }, android: { min: 3, max: 12 } },
+    concurrency: { min: 3, max: 5 },
+    minBrowserStartGapMs: 4000,
+    headlessMode: false,
+    session: { minDurationSeconds: 50, maxDurationSeconds: 70, clickProbability: 0.35 },
+    groupId: '0',
+    cookie: '',
+    openUrls: [],
+    fingerprint: {
+        userAgent: '', webrtc: 'proxy',
+        timezone: 'based-on-ip', customTimezone: '',
+        location: 'based-on-ip', customLatitude: '', customLongitude: '', customAccuracy: '100',
+        language: 'based-on-ip', customLanguage: 'en-US,en', displayLanguage: 'based-on-language',
+        screenResolution: 'random', customResolution: '1920x1080',
+        fonts: 'default', customFonts: [],
+        canvasNoise: true, webglNoise: true, audioNoise: true,
+        mediaDevicesNoise: true, clientRectsNoise: true, speechVoicesNoise: true,
+        webglMetadata: 'custom',
+        webglVendor: 'Google Inc. (Intel)',
+        webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+        webgpu: 'based-on-webgl',
+        randomFingerprint: false,
+    },
+};
+
 function proxyKey(p) {
     return `${p.host}:${p.port}:${p.pass || ''}`;
+}
+
+async function removeProxyFromAdsPower(userId, proxyHost, db) {
+    try {
+        const { data: sRes } = await db.from('ads_settings').select('data').eq('user_id', userId).single();
+        const settings = deepMerge(DEFAULT_SETTINGS, sRes?.data || {});
+        const { baseUrl, apiKey } = settings.adsPower;
+
+        if (!baseUrl) return;
+
+        const api = axios.create({
+            baseURL: baseUrl,
+            timeout: 20000,
+            headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
+        });
+
+        // Scan for profiles using this proxy host
+        const res = await api.get('/api/v1/user/list', { params: { page_size: 100 } }).catch(() => null);
+        const list = res?.data?.list || res?.data?.data?.list;
+        if (!list) return;
+
+        const toDelete = list
+            .filter(p => p.user_proxy_config?.proxy_host === proxyHost || p.ip === proxyHost)
+            .map(p => p.user_id);
+
+        if (toDelete.length > 0) {
+            console.log(`[AdsPower] Cleaning up ${toDelete.length} profile(s) for proxy host ${proxyHost}...`);
+            await api.post('/api/v1/user/delete', { user_ids: toDelete }).catch(() => null);
+        }
+    } catch (err) {
+        console.warn(`[AdsPower] Cleanup skip for ${proxyHost}: ${err.message}`);
+    }
 }
 
 function deepMerge(target, source) {
@@ -242,40 +351,115 @@ app.get('/api/logs', (req, res) => {
     });
 });
 
-// ─── Automation run / stop ────────────────────────────────────────────────────
+// ─── Automation control ──────────────────────────────────────────────────────────
+const userPauseStates = new Map(); // userId => true/false
+
+// Helper: spawn index.js, pipe stdout/stderr to SSE log, wire up cleanup
+function spawnAutomation(userId, runMode) {
+    if (userAutomations.has(userId)) return null;
+    userLogBuffers.set(userId, []);
+    userPauseStates.set(userId, false);
+    broadcastToUser(userId, `=== Starting Automation [mode: ${runMode}] ===`);
+
+    const scriptPath = path.join(__dirname, 'index.js');
+
+    // In production, __dirname is inside app.asar. fork() requires a REAL directory for 'cwd'.
+    // We already set process.cwd() to a real directory (resources/) in main.js.
+    const realCwd = __dirname.includes('app.asar') ? process.cwd() : __dirname;
+
+    const options = {
+        cwd: realCwd,
+        env: {
+            ...process.env,
+            AUTOMATION_USER_ID: userId,
+            RUN_MODE: runMode,
+            ELECTRON_RUN_AS_NODE: '1'
+        },
+        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    };
+
+    try {
+        const proc = fork(scriptPath, [], options);
+        userAutomations.set(userId, proc);
+
+        const pipe = d => d.toString().split('\n').filter(Boolean).forEach(line => broadcastToUser(userId, line));
+
+        if (proc.stdout) proc.stdout.on('data', pipe);
+        if (proc.stderr) proc.stderr.on('data', pipe);
+
+        proc.on('error', (err) => {
+            broadcastToUser(userId, `!!! ERROR spawning automation: ${err.message}`);
+        });
+
+        proc.on('close', code => {
+            broadcastToUser(userId, `=== EXITED (code ${code ?? 0}) ===`);
+            userAutomations.delete(userId);
+            userPauseStates.delete(userId);
+        });
+        return proc;
+    } catch (err) {
+        broadcastToUser(userId, `!!! CRITICAL ERROR: ${err.message}`);
+        return null;
+    }
+}
+
 app.get('/api/status', (req, res) => {
-    res.json({ running: userAutomations.has(req.user.id) });
+    const userId = req.user.id;
+    res.json({
+        running: userAutomations.has(userId),
+        paused: userPauseStates.get(userId) || false,
+    });
 });
 
 app.post('/api/run', (req, res) => {
     const userId = req.user.id;
-    if (userAutomations.has(userId)) return res.status(400).json({ error: 'Already running' });
+    const runMode = (['once', 'all'].includes(req.body?.runMode)) ? req.body.runMode : 'once';
+    const proc = spawnAutomation(userId, runMode);
+    if (!proc) return res.status(400).json({ error: 'Already running' });
+    res.json({ started: true, runMode });
+});
 
-    userLogBuffers.set(userId, []);
-    broadcastToUser(userId, '=== Starting AdsPower Automation ===');
+app.post('/api/run/once', (req, res) => {
+    const proc = spawnAutomation(req.user.id, 'once');
+    if (!proc) return res.status(400).json({ error: 'Already running' });
+    res.json({ started: true, runMode: 'once' });
+});
 
-    const proc = spawn('node', ['index.js'], {
-        cwd: __dirname,
-        env: { ...process.env, AUTOMATION_USER_ID: userId }
-    });
-    userAutomations.set(userId, proc);
+app.post('/api/run/all', (req, res) => {
+    const proc = spawnAutomation(req.user.id, 'all');
+    if (!proc) return res.status(400).json({ error: 'Already running' });
+    res.json({ started: true, runMode: 'all' });
+});
 
-    const pipe = d => d.toString().split('\n').filter(Boolean).forEach(line => broadcastToUser(userId, line));
-    proc.stdout.on('data', pipe);
-    proc.stderr.on('data', pipe);
-    proc.on('close', code => {
-        broadcastToUser(userId, `=== Process exited (code ${code ?? 0}) ===`);
-        userAutomations.delete(userId);
-    });
+app.post('/api/pause', (req, res) => {
+    const userId = req.user.id;
+    const proc = userAutomations.get(userId);
+    if (!proc) return res.status(400).json({ error: 'Not running' });
+    if (userPauseStates.get(userId)) return res.json({ paused: true }); // already paused
+    userPauseStates.set(userId, true);
+    proc.stdin.write('PAUSE\n');
+    broadcastToUser(userId, '=== ⏸ Automation paused — batches will wait after current sessions finish ===');
+    res.json({ paused: true });
+});
 
-    res.json({ started: true });
+app.post('/api/resume', (req, res) => {
+    const userId = req.user.id;
+    const proc = userAutomations.get(userId);
+    if (!proc) return res.status(400).json({ error: 'Not running' });
+    userPauseStates.set(userId, false);
+    proc.stdin.write('RESUME\n');
+    broadcastToUser(userId, '=== ▶ Automation resumed ===');
+    res.json({ paused: false });
 });
 
 app.post('/api/stop', (req, res) => {
     const userId = req.user.id;
     const proc = userAutomations.get(userId);
     if (proc) {
-        broadcastToUser(userId, '=== Stop requested — finishing current sessions gracefully… ===');
+        // If paused, resume first so the process isn't stuck waiting
+        if (userPauseStates.get(userId)) proc.stdin.write('RESUME\n');
+        userPauseStates.set(userId, false);
+        broadcastToUser(userId, '=== ⏹ Stop requested — finishing current sessions gracefully… ===');
         proc.kill('SIGINT');
     }
     res.json({ stopped: true });
@@ -283,6 +467,20 @@ app.post('/api/stop', (req, res) => {
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 app.get('/api/stats', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        const proxies = loadJsonFile(DEFAULT_PATHS.proxies);
+        const used = loadJsonFile(DEFAULT_PATHS.usedProxies);
+        const websites = loadJsonFile(DEFAULT_PATHS.websites);
+        const running = userAutomations.has(req.user.id);
+
+        return res.json({
+            totalProxies: proxies.length,
+            usedProxies: used.length,
+            freshProxies: proxies.length - used.length, // Rough estimate
+            websites: websites.length,
+            running
+        });
+    }
     const db = req.supabase;
     const userId = req.user.id;
 
@@ -296,7 +494,6 @@ app.get('/api/stats', async (req, res) => {
         db.from('ads_website').select('*', { count: 'exact', head: true }),
     ]);
 
-    // Fresh proxies = proxies not in used_proxies
     const { data: proxies } = await db.from('ads_proxies').select('host,port,pass');
     const { data: used } = await db.from('ads_used_proxies').select('host,port,pass');
     const usedKeys = new Set((used || []).map(p => proxyKey(p)));
@@ -311,8 +508,42 @@ app.get('/api/stats', async (req, res) => {
     });
 });
 
+// ─── Logs (Success History) ───────────────────────────────────────────────────
+app.get('/api/success-logs', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        const logs = loadJsonFile(DEFAULT_PATHS.logs);
+        return res.json(logs.slice(-200).reverse());
+    }
+    const db = req.supabase;
+    const userId = req.user.id;
+    const { data: logs, error } = await db.from('ads_logs')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(200);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(logs || []);
+});
+
+app.post('/api/success-logs/clear', async (req, res) => {
+    const db = req.supabase;
+    const userId = req.user.id;
+    const { error } = await db.from('ads_logs').delete().eq('user_id', userId);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+});
+
 // ─── Proxies ──────────────────────────────────────────────────────────────────
 app.get('/api/proxies', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        const proxies = loadJsonFile(DEFAULT_PATHS.proxies);
+        const used = loadJsonFile(DEFAULT_PATHS.usedProxies);
+        const usedKeys = new Set((used || []).map(p => proxyKey(p)));
+        return res.json(proxies.map(p => {
+            const parsed = normalizeProxy(p);
+            return { ...parsed, used: usedKeys.has(proxyKey(parsed)), key: proxyKey(parsed) };
+        }));
+    }
     const db = req.supabase;
     const { data: proxies, error } = await db.from('ads_proxies').select('*').order('created_at');
     if (error) return res.status(500).json({ error: error.message });
@@ -325,13 +556,27 @@ app.get('/api/proxies', async (req, res) => {
 
 app.post('/api/proxies/add', async (req, res) => {
     const { entries } = req.body;
-    const db = req.supabase;
-    const userId = req.user.id;
-
     if (!Array.isArray(entries) || entries.length === 0)
         return res.status(400).json({ error: 'entries array required' });
 
-    // Get existing proxy keys to avoid duplicates
+    if (IS_LOCAL_MODE) {
+        const pool = loadJsonFile(DEFAULT_PATHS.proxies);
+        const existingKeys = new Set(pool.map(p => proxyKey(normalizeProxy(p))));
+        let addedCount = 0;
+        for (const e of entries) {
+            const p = normalizeProxy(e);
+            if (!p || existingKeys.has(proxyKey(p))) continue;
+            pool.push(p);
+            existingKeys.add(proxyKey(p));
+            addedCount++;
+        }
+        if (addedCount > 0) saveJsonFile(DEFAULT_PATHS.proxies, pool);
+        return res.json({ added: addedCount });
+    }
+
+    const db = req.supabase;
+    const userId = req.user.id;
+    // ... rest of the supabase logic ...
     const { data: existing } = await db.from('ads_proxies').select('host,port,pass');
     const existingKeys = new Set((existing || []).map(p => proxyKey(p)));
 
@@ -355,17 +600,30 @@ app.post('/api/proxies/add', async (req, res) => {
 app.delete('/api/proxies', async (req, res) => {
     const { keys } = req.body;
     const db = req.supabase;
+    const userId = req.user.id;
 
     if (Array.isArray(keys) && keys.length) {
-        // Delete specific proxies by composite key
+        // 1. Get hostnames before deleting to clean up AdsPower later
         const { data: all } = await db.from('ads_proxies').select('id,host,port,pass');
-        const ids = (all || [])
-            .filter(p => keys.includes(proxyKey(p)))
-            .map(p => p.id);
-        if (ids.length) await db.from('ads_proxies').delete().in('id', ids);
+        const matches = (all || []).filter(p => keys.includes(proxyKey(p)));
+        const ids = matches.map(p => p.id);
+        const hosts = [...new Set(matches.map(p => p.host))];
+
+        if (ids.length) {
+            // 2. Delete from Supabase
+            await db.from('ads_proxies').delete().in('id', ids);
+            // 3. Trigger AdsPower cleanup in background
+            hosts.forEach(h => removeProxyFromAdsPower(userId, h, db));
+        }
     } else {
         // Delete all proxies for this user
+        const { data: all } = await db.from('ads_proxies').select('host');
+        const hosts = [...new Set((all || []).map(p => p.host))];
+
         await db.from('ads_proxies').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+
+        // Background cleanup
+        hosts.forEach(h => removeProxyFromAdsPower(userId, h, db));
     }
 
     res.json({ deleted: true });
@@ -387,19 +645,34 @@ app.delete('/api/used-proxies', async (req, res) => {
 app.get('/api/websites', async (req, res) => {
     const { data, error } = await req.supabase.from('ads_website').select('id,url').order('created_at');
     if (error) return res.status(500).json({ error: error.message });
-    res.json((data || []).map(w => w.url));
+    // Normalize on read too — fixes any bare URLs saved before this patch
+    res.json((data || []).map(w => normalizeUrl(w.url)));
 });
+
+// ─── URL normaliser ─ auto-prepend https:// if no protocol present ───────────
+function normalizeUrl(raw) {
+    const s = (raw || '').trim();
+    if (!s) return s;
+    // Already has a scheme
+    if (/^https?:\/\//i.test(s)) return s;
+    // Has a different scheme (ftp:// etc) — leave as-is
+    if (/^[a-z][a-z0-9+\-.]*:\/\//i.test(s)) return s;
+    // No scheme — default to https://
+    return 'https://' + s;
+}
 
 app.post('/api/websites/add', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'url required' });
 
+    const normalized = normalizeUrl(url);
+
     const { error } = await req.supabase
         .from('ads_website')
-        .upsert({ user_id: req.user.id, url: url.trim() }, { onConflict: 'user_id,url' });
+        .upsert({ user_id: req.user.id, url: normalized }, { onConflict: 'user_id,url' });
 
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ added: true });
+    res.json({ added: true, url: normalized });
 });
 
 app.delete('/api/websites/:index', async (req, res) => {
@@ -414,33 +687,13 @@ app.delete('/api/websites/:index', async (req, res) => {
 });
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
-const DEFAULT_SETTINGS = {
-    adsPower: { baseUrl: 'http://127.0.0.1:50325', apiKey: '' },
-    proxySampling: { windows: { min: 5, max: 15 }, mac: { min: 2, max: 8 }, android: { min: 3, max: 12 } },
-    concurrency: { min: 3, max: 5 },
-    minBrowserStartGapMs: 4000,
-    session: { minDurationSeconds: 50, maxDurationSeconds: 70, clickProbability: 0.35 },
-    groupId: '0',
-    cookie: '',
-    openUrls: [],
-    fingerprint: {
-        userAgent: '', webrtc: 'proxy',
-        timezone: 'based-on-ip', customTimezone: '',
-        location: 'based-on-ip', customLatitude: '', customLongitude: '', customAccuracy: '100',
-        language: 'based-on-ip', customLanguage: 'en-US,en', displayLanguage: 'based-on-language',
-        screenResolution: 'random', customResolution: '1920x1080',
-        fonts: 'default', customFonts: [],
-        canvasNoise: true, webglNoise: true, audioNoise: true,
-        mediaDevicesNoise: true, clientRectsNoise: true, speechVoicesNoise: true,
-        webglMetadata: 'custom',
-        webglVendor: 'Google Inc. (Intel)',
-        webglRenderer: 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)',
-        webgpu: 'based-on-webgl',
-        randomFingerprint: false,
-    },
-};
+// (DEFAULT_SETTINGS moved up)
 
 app.get('/api/settings', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        const settings = loadJsonFile(DEFAULT_PATHS.settings);
+        return res.json(deepMerge(DEFAULT_SETTINGS, settings));
+    }
     const { data } = await req.supabase
         .from('ads_settings')
         .select('data')
@@ -451,6 +704,10 @@ app.get('/api/settings', async (req, res) => {
 });
 
 app.post('/api/settings', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        saveJsonFile(DEFAULT_PATHS.settings, req.body);
+        return res.json({ saved: true });
+    }
     const { error } = await req.supabase
         .from('ads_settings')
         .upsert({ user_id: req.user.id, data: req.body, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });

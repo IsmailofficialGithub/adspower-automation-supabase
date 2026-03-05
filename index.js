@@ -16,7 +16,9 @@
  *  7. Graceful shutdown: SIGINT/SIGTERM lets the current batch finish, THEN exits
  */
 
-require('dotenv').config();
+const path = require('path');
+const dotenv = require('dotenv');
+dotenv.config({ path: process.env.DOTENV_CONFIG_PATH || path.join(__dirname, '.env') });
 const { createClient } = require('@supabase/supabase-js');
 const puppeteer = require('puppeteer-core');
 const axios = require('axios');
@@ -24,10 +26,52 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const { HttpProxyAgent } = require('http-proxy-agent');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const fs = require('fs');
-const path = require('path');
 const config = require('./config');
 const logger = require('./utils/logger');
 const { randomInt, sleep } = require('./utils/helpers');
+
+// ─── AdsPower API ─────────────────────────────────────────────────────────────
+const MIN_API_GAP_MS = 1200;
+let lastApiCallAt = 0;
+
+async function rateLimitedApi(fn) {
+  const gap = MIN_API_GAP_MS - (Date.now() - lastApiCallAt);
+  if (gap > 0) await sleep(gap);
+  lastApiCallAt = Date.now();
+  return fn();
+}
+
+const api = axios.create({
+  baseURL: config.adsPower.baseUrl,
+  timeout: 25000,
+  headers: config.adsPower.apiKey
+    ? { Authorization: `Bearer ${config.adsPower.apiKey}` }
+    : {},
+});
+
+async function apiCall(fn, label = '', maxRetries = 4) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await rateLimitedApi(fn);
+      const msg = res?.data?.msg || '';
+      if (res?.data?.code !== 0 && msg.toLowerCase().includes('too many')) {
+        const delay = attempt * 3000;
+        logger.warn(`[${label}] Rate-limited — waiting ${delay / 1000}s (attempt ${attempt}/${maxRetries})…`);
+        await sleep(delay);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      const delay = attempt * 3000;
+      if (attempt < maxRetries) {
+        logger.warn(`[${label}] Error attempt ${attempt}/${maxRetries} — retrying in ${delay / 1000}s… (${err.message})`);
+        await sleep(delay);
+      } else {
+        throw err;
+      }
+    }
+  }
+}
 
 // ─── Supabase Configuration ──────────────────────────────────────────────────
 const userId = process.env.AUTOMATION_USER_ID;
@@ -40,8 +84,30 @@ const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_
 // ─── OS → AdsPower platform ID ───────────────────────────────────────────────
 const OS_PLATFORM = { windows: 0, mac: 1, android: 3 };
 
-// ─── Graceful-shutdown flag ───────────────────────────────────────────────────
+// ─── Control flags ────────────────────────────────────────────────────────
 let shutdownRequested = false;
+let pauseRequested = false;
+
+// Listen for PAUSE / RESUME commands sent via stdin by server.js
+if (!process.stdin.isTTY) {
+  process.stdin.setEncoding('utf8');
+  let stdinBuf = '';
+  process.stdin.on('data', chunk => {
+    stdinBuf += chunk;
+    const lines = stdinBuf.split('\n');
+    stdinBuf = lines.pop(); // keep incomplete line
+    for (const line of lines) {
+      const cmd = line.trim().toUpperCase();
+      if (cmd === 'PAUSE') {
+        pauseRequested = true;
+        logger.info('\u23f8  Automation paused — finishing active sessions then waiting for resume…');
+      } else if (cmd === 'RESUME') {
+        pauseRequested = false;
+        logger.info('\u25b6  Automation resumed.');
+      }
+    }
+  });
+}
 
 // ─── JSON helpers ─────────────────────────────────────────────────────────────
 
@@ -55,6 +121,35 @@ function loadJSON(filePath) {
 
 function saveJSON(filePath, data) {
   fs.writeFileSync(path.resolve(filePath), JSON.stringify(data, null, 2), 'utf8');
+}
+
+// ─── URL normaliser ─ auto-prepend https:// if no protocol given ─────────────
+function normalizeUrl(raw) {
+  const s = (raw || '').trim();
+  if (!s) return s;
+  if (/^https?:\/\//i.test(s)) return s;              // already has http(s)
+  if (/^[a-z][a-z0-9+\-.]*:\/\//i.test(s)) return s; // some other scheme
+  return 'https://' + s;                               // bare domain → https://
+}
+
+// ─── Deep merge (for settings) ────────────────────────────────────────────────────
+function deepMerge(target, source) {
+  const result = { ...target };
+  for (const k of Object.keys(source || {})) {
+    if (source[k] && typeof source[k] === 'object' && !Array.isArray(source[k]))
+      result[k] = deepMerge(target[k] || {}, source[k]);
+    else if (source[k] !== undefined)
+      result[k] = source[k];
+  }
+  return result;
+}
+
+// ─── Pause helper ──────────────────────────────────────────────────────────────
+async function waitWhilePaused() {
+  if (!pauseRequested) return;
+  logger.info('\u23f8  Paused — waiting for resume…');
+  while (pauseRequested && !shutdownRequested) await sleep(500);
+  if (!shutdownRequested) logger.info('\u25b6  Resumed — continuing…');
 }
 
 // ─── Proxy helpers ─────────────────────────────────────────────────────────────
@@ -137,6 +232,77 @@ async function markProxyUsed(proxy) {
   }
 }
 
+async function removeProxyFromAdsPower(proxyHost) {
+  try {
+    // We check the first 100 profiles (page_limit: 100) to find matching proxies.
+    // This catches leftovers without scanning thousands of profiles.
+    const res = await apiCall(() => api.get('/api/v1/user/list', { params: { page_size: 100 } }), 'Scan for dead proxy profiles');
+    if (!res?.data?.list) return;
+
+    const toDelete = res.data.list
+      .filter(p => p.user_proxy_config?.proxy_host === proxyHost || p.ip === proxyHost)
+      .map(p => p.user_id);
+
+    if (toDelete.length > 0) {
+      logger.info(`  \u2717 Deleting ${toDelete.length} leftover profile(s) from AdsPower using ${proxyHost}…`);
+      await apiCall(() => api.post('/api/v1/user/delete', { user_ids: toDelete }), 'Cleanup failed proxy profiles');
+    }
+  } catch (err) {
+    logger.debug(`AdsPower cleanup skip for ${proxyHost}: ${err.message}`);
+  }
+}
+
+async function removeProxyFromSource(proxy) {
+  // 1. Remove from database
+  if (supabase && userId) {
+    const { error } = await supabase.from('ads_proxies')
+      .delete()
+      .eq('user_id', userId)
+      .eq('host', proxy.host)
+      .eq('port', proxy.port);
+    if (error) logger.warn(`Failed to remove failed proxy from Supabase: ${error.message}`);
+    else logger.info(`Failed proxy permanently removed from Supabase: ${proxy.host}:${proxy.port}`);
+  } else {
+    const pool = loadJSON(config.paths.proxies);
+    const key = proxyKey(proxy);
+    const filtered = pool.filter(p => {
+      const parsed = parseProxyEntry(p);
+      return parsed && proxyKey(parsed) !== key;
+    });
+    if (filtered.length !== pool.length) {
+      saveJSON(config.paths.proxies, filtered);
+      logger.info(`Failed proxy permanently removed from local file: ${proxy.host}:${proxy.port}`);
+    }
+  }
+
+  // 2. Remove associated profiles from AdsPower
+  await removeProxyFromAdsPower(proxy.host);
+}
+
+async function logSessionSuccess(profileId, websiteUrl, durationSeconds, proxy) {
+  if (supabase && userId) {
+    const { error } = await supabase.from('ads_logs').insert({
+      user_id: userId,
+      profile_id: profileId,
+      website_url: websiteUrl,
+      duration_seconds: durationSeconds,
+      proxy_host: proxy.host,
+      proxy_port: proxy.port,
+      status: 'success'
+    });
+    if (error) logger.warn(`Failed to save success log to Supabase: ${error.message}`);
+    else logger.info(`[${profileId}] Success log saved to Supabase.`);
+  } else {
+    const logs = loadJSON(config.paths.logs);
+    logs.push({
+      profileId, websiteUrl, durationSeconds,
+      proxyHost: proxy.host, proxyPort: proxy.port,
+      status: 'success', timestamp: new Date().toISOString()
+    });
+    saveJSON(config.paths.logs, logs);
+  }
+}
+
 // ─── Proxy Pre-flight Test ─────────────────────────────────────────────────────
 
 async function testProxy(proxy) {
@@ -177,50 +343,6 @@ async function testProxy(proxy) {
   return false;
 }
 
-// ─── Global API rate-limit gate ───────────────────────────────────────────────
-const MIN_API_GAP_MS = 1200;
-let lastApiCallAt = 0;
-
-async function rateLimitedApi(fn) {
-  const gap = MIN_API_GAP_MS - (Date.now() - lastApiCallAt);
-  if (gap > 0) await sleep(gap);
-  lastApiCallAt = Date.now();
-  return fn();
-}
-
-// ─── AdsPower API ─────────────────────────────────────────────────────────────
-
-const api = axios.create({
-  baseURL: config.adsPower.baseUrl,
-  timeout: 25000,
-  headers: config.adsPower.apiKey
-    ? { Authorization: `Bearer ${config.adsPower.apiKey}` }
-    : {},
-});
-
-async function apiCall(fn, label = '', maxRetries = 4) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await rateLimitedApi(fn);
-      const msg = res?.data?.msg || '';
-      if (res?.data?.code !== 0 && msg.toLowerCase().includes('too many')) {
-        const delay = attempt * 3000;
-        logger.warn(`[${label}] Rate-limited — waiting ${delay / 1000}s (attempt ${attempt}/${maxRetries})…`);
-        await sleep(delay);
-        continue;
-      }
-      return res;
-    } catch (err) {
-      const delay = attempt * 3000;
-      if (attempt < maxRetries) {
-        logger.warn(`[${label}] Error attempt ${attempt}/${maxRetries} — retrying in ${delay / 1000}s… (${err.message})`);
-        await sleep(delay);
-      } else {
-        throw err;
-      }
-    }
-  }
-}
 
 async function fetchExistingProfileCount() {
   try {
@@ -365,7 +487,10 @@ async function createProfile(proxy, name) {
     userSettings = data?.data || {};
   } else {
     // Reload settings fresh each time so UI changes take effect without restart
-    const SETTINGS_FILE = path.resolve(__dirname, 'data/settings.json');
+    const dDir = process.env.USER_DATA_PATH
+      ? path.join(process.env.USER_DATA_PATH, 'data')
+      : path.join(__dirname, 'data');
+    const SETTINGS_FILE = path.join(dDir, 'settings.json');
     try {
       if (fs.existsSync(SETTINGS_FILE))
         userSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
@@ -406,9 +531,11 @@ async function createProfile(proxy, name) {
   return profileId;
 }
 
-async function activateProfile(profileId) {
+async function activateProfile(profileId, { headless = false } = {}) {
+  const params = { user_id: profileId };
+  if (headless) params.headless = 1;  // AdsPower headless launch param
   const res = await apiCall(
-    () => api.get('/api/v1/browser/start', { params: { user_id: profileId } }),
+    () => api.get('/api/v1/browser/start', { params }),
     `activate:${profileId}`
   );
   if (res.data.code !== 0) throw new Error(`Start failed [${profileId}]: ${res.data.msg}`);
@@ -717,12 +844,13 @@ async function runSession(profileId, proxy, url) {
     cleanedUp = true;
     await stopProfile(profileId);
     await deleteProfile(profileId);
-    markProxyUsed(proxy);
+    await markProxyUsed(proxy);
     logger.info(`[${profileId}] Cleanup done — proxy removed from AdsPower and marked used.`);
   };
 
   try {
-    const endpoint = await activateProfile(profileId);
+    const headlessMode = !!(global._effectiveCfg?.headlessMode);
+    const endpoint = await activateProfile(profileId, { headless: headlessMode });
     const wsUrl = endpoint.ws.puppeteer;
 
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -738,39 +866,81 @@ async function runSession(profileId, proxy, url) {
 
     const page = (await browser.pages())[0] || (await browser.newPage());
 
-    // Hard navigation timeout — if navigateToTarget hangs beyond this,
-    // we continue with browsing on whatever page is currently loaded.
-    const NAV_TIMEOUT_MS = 90000;
+    // If headless mode: minimize the browser window via CDP so it runs in background
+    if (headlessMode) {
+      try {
+        const cdp = await page.target().createCDPSession();
+        const { windowId } = await cdp.send('Browser.getWindowForTarget');
+        await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+        logger.info(`[${profileId}] 💻 Browser minimized (headless mode).`);
+      } catch (e) {
+        logger.debug(`[${profileId}] Could not minimize window: ${e.message}`);
+      }
+    }
+
+    // ── Step 1: Navigate (with generous timeout for redirect strategy) ──────────
+    // Redirect strategy does: intermediate site (30s) + sleep (3.5s) + target (60s) = ~93.5s max.
+    // We give 130s so the strategy always has room to complete before the hard cap fires.
+    const NAV_TIMEOUT_MS = 130000;
     await Promise.race([
       navigateToTarget(page, profileId, url, proxy.os),
       sleep(NAV_TIMEOUT_MS).then(() => {
-        logger.warn(`[${profileId}] Navigation timed out after ${NAV_TIMEOUT_MS / 1000}s — continuing with current page`);
+        logger.warn(`[${profileId}] Navigation hard-cap (${NAV_TIMEOUT_MS / 1000}s) reached.`);
       }),
     ]);
 
+    // ── Step 2: Verify we are on the TARGET domain ──────────────────────────────
+    // After a redirect or Google strategy the browser might still be on an
+    // intermediate page.  If so, do a fast direct fallback navigation NOW,
+    // BEFORE starting the session timer.
+    let targetHost;
+    try { targetHost = new URL(normalizeUrl(url)).hostname.replace(/^www\./, ''); } catch (_) { targetHost = ''; }
+
     const landedUrl = page.url();
-    logger.info(`[${profileId}] Starting browse session on: ${landedUrl}`);
+    const onTarget = targetHost && landedUrl.includes(targetHost);
+
+    if (!onTarget && targetHost) {
+      logger.warn(`[${profileId}] Landed on ${landedUrl.slice(0, 70)} — NOT the target. Navigating directly…`);
+      try {
+        await page.goto(normalizeUrl(url), { waitUntil: 'domcontentloaded', timeout: 45000 });
+        logger.info(`[${profileId}] Direct fallback landed on: ${page.url()}`);
+      } catch (err) {
+        logger.warn(`[${profileId}] Direct fallback failed: ${err.message} — browsing current page anyway.`);
+      }
+    }
+
+    // ── Step 3: START the browse timer now that we are on the target site ───────
+    const finalUrl = page.url();
+    logger.info(`[${profileId}] ✓ Starting browse session on: ${finalUrl}`);
+
+    const cfg = (global._effectiveCfg) || config; // use settings loaded in main() if available
     const durationMs = randomInt(
-      config.session.minDurationSeconds * 1000,
-      config.session.maxDurationSeconds * 1000
+      (cfg.session?.minDurationSeconds ?? config.session.minDurationSeconds) * 1000,
+      (cfg.session?.maxDurationSeconds ?? config.session.maxDurationSeconds) * 1000
     );
     const deadline = Date.now() + durationMs;
-    logger.info(`[${profileId}] Browsing for ${Math.round(durationMs / 1000)}s…`);
+    logger.info(`[${profileId}] Browsing for ${Math.round(durationMs / 1000)}s (timer starts NOW on target page)…`);
 
     while (Date.now() < deadline) {
       const action = randomInt(0, 2);
       if (action === 0) await simulateCursorMovement(page);
       else if (action === 1) await humanScroll(page);
       else await randomClick(page);
-      await sleep(randomInt(config.session.minActionDelayMs, config.session.maxActionDelayMs));
+      await sleep(randomInt(
+        cfg.session?.minActionDelayMs ?? config.session.minActionDelayMs,
+        cfg.session?.maxActionDelayMs ?? config.session.maxActionDelayMs
+      ));
     }
+
+    // ── Step 4: Record success log ──────────────────────────────────────────────
+    await logSessionSuccess(profileId, finalUrl, Math.round(durationMs / 1000), proxy);
 
     await browser.disconnect().catch(() => { });
   } finally {
-    // Always cleanup — even if shutdown was requested, we ALWAYS finish the current session
     await cleanup();
   }
 }
+
 
 // ─── Semaphore Pool ───────────────────────────────────────────────────────────
 
@@ -786,8 +956,13 @@ async function runPool(tasks, limit, startGapMs) {
 
   await new Promise((resolve) => {
     function tryStart() {
-      // If shutdown requested, don't start any more NEW sessions
-      while (!shutdownRequested && active < limit && queue.length > 0) {
+      // Paused: hold here and re-check after 500ms
+      if (pauseRequested && !shutdownRequested) {
+        setTimeout(tryStart, 500);
+        return;
+      }
+      // Shutdown: drain active tasks then resolve
+      while (!shutdownRequested && !pauseRequested && active < limit && queue.length > 0) {
         const gap = startGapMs - (Date.now() - lastStart);
         if (gap > 0) { setTimeout(tryStart, gap); return; }
         active++;
@@ -808,75 +983,79 @@ async function runPool(tasks, limit, startGapMs) {
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
-async function main() {
-  logger.info(`=== AdsPower Automation Starting${userId ? ` (User: ${userId})` : ''} ===`);
-
-  let websites = [];
-  let allProxies = [];
-  let usedKeys = new Set();
-
-  if (supabase && userId) {
-    logger.info('Fetching data from Supabase...');
-    const [wRes, pRes, uRes] = await Promise.all([
-      supabase.from('ads_website').select('url').eq('user_id', userId),
-      supabase.from('ads_proxies').select('*').eq('user_id', userId),
-      supabase.from('ads_used_proxies').select('host,port,pass').eq('user_id', userId)
-    ]);
-
-    websites = (wRes.data || []).map(w => w.url);
-    allProxies = (pRes.data || []).map(p => ({ ...p, protocol: p.protocol || 'socks5' }));
-    usedKeys = new Set((uRes.data || []).map(p => proxyKey(p)));
-  } else {
-    websites = loadJSON(config.paths.websites);
-    allProxies = loadJSON(config.paths.proxies).map(parseProxyEntry).filter(Boolean);
-    usedKeys = new Set(loadJSON(config.paths.usedProxies).map(p => proxyKey(p)));
-  }
-
+/**
+ * Run a single automation batch:
+ *  1. Pick a random NUM target (from proxySampling total range)
+ *  2. Draw fresh proxies from the pool one-by-one, testing each
+ *  3. Stop drawing as soon as NUM live proxies are collected
+ *  4. Create AdsPower profiles for live proxies → run sessions
+ * Returns: 'done' | 'no-websites' | 'no-proxies' | 'no-live' | 'no-profiles' | 'no-slots'
+ */
+async function runBatch(freshPool, websites, cfg) {
   if (!websites.length) {
     logger.warn('No websites found to browse.');
-    return;
+    return 'no-websites';
   }
-
-  const freshPool = allProxies.filter(p => !usedKeys.has(proxyKey(p)));
-
-  logger.info(`Proxy pool: ${allProxies.length} total, ${freshPool.length} fresh, ${usedKeys.size} used.`);
   if (!freshPool.length) {
-    logger.warn('All proxies have been used for this user.');
-    return;
+    logger.warn('No fresh proxies remaining.');
+    return 'no-proxies';
   }
 
-  // ── Sample proxies per OS ─────────────────────────────────────────────────
-  const sampled = [];
-  for (const [os, range] of Object.entries(config.proxySampling)) {
-    const count = randomInt(range.min, range.max);
-    const picked = sampleProxiesForOS(freshPool, os, count);
-    logger.info(`OS [${os}]: requested ${count}, available ${picked.length} → using ${picked.length}`);
-    sampled.push(...picked);
-  }
-  if (!sampled.length) { logger.warn('No fresh proxies. Exiting.'); return; }
+  // ── 1. Pick target = random number in the Browser Concurrency range ───────
+  //    This is exactly what the user configured: how many browsers to run per batch.
+  const concMin = cfg.concurrency?.min ?? 3;
+  const concMax = cfg.concurrency?.max ?? 5;
+  const targetLive = randomInt(
+    Math.min(concMin, freshPool.length),
+    Math.min(concMax, freshPool.length)
+  );
+  logger.info(`\nTarget: ${targetLive} live proxies (concurrency min=${concMin} max=${concMax}, pool=${freshPool.length}).`);
 
-  // ── Pre-flight proxy test ─────────────────────────────────────────────────
-  logger.info(`\nTesting ${sampled.length} proxy connections (skip dead ones)…`);
+  // ── 2. Shuffle the fresh pool and test one-by-one until quota met ────────
+  //    We shuffle a COPY so the caller's freshPool array is not mutated.
+  const shuffled = [...freshPool];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = randomInt(0, i);
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
   const liveProxies = [];
-  for (const proxy of sampled) {
+  const testedProxies = []; // track all tested (live + dead) so we can remove from freshPool
+
+  logger.info(`Testing proxies one-by-one until ${targetLive} live found…\n`);
+
+  for (const proxy of shuffled) {
+    if (shutdownRequested) break;
+    if (pauseRequested) await waitWhilePaused();
+    if (shutdownRequested) break;
+    if (liveProxies.length >= targetLive) break;
+
+    testedProxies.push(proxy);
     const ok = await testProxy(proxy);
     if (ok) {
-      logger.info(`  ✓ LIVE   ${proxy.protocol}://${proxy.host}:${proxy.port} [${proxy.os}]`);
+      logger.info(`  ✓ LIVE   ${proxy.protocol}://${proxy.host}:${proxy.port} [${proxy.os}]  (${liveProxies.length + 1}/${targetLive})`);
       liveProxies.push(proxy);
     } else {
-      logger.warn(`  ✗ DEAD   ${proxy.protocol}://${proxy.host}:${proxy.port} [${proxy.os}] — skipping`);
-      markProxyUsed(proxy);
+      logger.warn(`  \u2717 DEAD   ${proxy.protocol}://${proxy.host}:${proxy.port} [${proxy.os}] \u2014 removing from pool`);
+      await removeProxyFromSource(proxy);
+      // Remove dead proxy from the caller's copy of freshPool
+      const idx = freshPool.findIndex(p => proxyKey(p) === proxyKey(proxy));
+      if (idx !== -1) freshPool.splice(idx, 1);
     }
-    await sleep(500);
+    await sleep(300);
   }
 
-  logger.info(`\nProxy test complete: ${liveProxies.length} live, ${sampled.length - liveProxies.length} dead.`);
+  logger.info(`\nProxy test complete: ${liveProxies.length} live found (tested ${testedProxies.length}).`);
+
   if (!liveProxies.length) {
-    logger.error('No live proxies available. Check your proxy credentials/service and try again.');
-    return;
+    logger.error('No live proxies found in this batch. Check proxy credentials.');
+    return 'no-live';
+  }
+  if (liveProxies.length < targetLive) {
+    logger.warn(`Only ${liveProxies.length} of ${targetLive} target live proxies found — continuing with what we have.`);
   }
 
-  // ── Check AdsPower account limit ─────────────────────────────────────────
+  // ── 3. Check AdsPower slot limit ────────────────────────────────────────
   const ADSPOWER_MAX = 22;
   const existingCount = await fetchExistingProfileCount();
   const availableSlots = Math.max(0, ADSPOWER_MAX - existingCount);
@@ -884,7 +1063,7 @@ async function main() {
 
   if (availableSlots === 0) {
     logger.warn('No AdsPower slots free. Delete old profiles and retry.');
-    return;
+    return 'no-slots';
   }
 
   const toCreate = liveProxies.slice(0, availableSlots);
@@ -892,14 +1071,11 @@ async function main() {
     logger.warn(`Capped: creating ${toCreate.length} of ${liveProxies.length} live proxies (plan limit).`);
   }
 
-  // ── Create profiles sequentially ─────────────────────────────────────────
+  // ── 4. Create profiles sequentially ────────────────────────────────────
   logger.info(`\nCreating ${toCreate.length} profile(s)…`);
   const profileMap = [];
   for (let i = 0; i < toCreate.length; i++) {
-    if (shutdownRequested) {
-      logger.warn('Shutdown requested — stopping profile creation early.');
-      break;
-    }
+    if (shutdownRequested) { logger.warn('Shutdown requested — stopping profile creation early.'); break; }
     const proxy = toCreate[i];
     const name = `auto_${proxy.os}_${Date.now()}_${i}`;
     try {
@@ -910,40 +1086,141 @@ async function main() {
     }
     await sleep(randomInt(1500, 2000));
   }
-  if (!profileMap.length) { logger.error('No profiles created. Aborting.'); return; }
+  if (!profileMap.length) { logger.error('No profiles created. Aborting batch.'); return 'no-profiles'; }
 
   const concurrency = Math.min(
-    randomInt(config.concurrency.min, config.concurrency.max),
+    randomInt(cfg.concurrency.min, cfg.concurrency.max),
     profileMap.length
   );
   logger.info(`\n${profileMap.length} profile(s) ready. Running ${concurrency} browser(s) at a time.`);
 
-  // ── Run sessions ──────────────────────────────────────────────────────────
+  // ── 5. Run sessions ─────────────────────────────────────────────────────
   const tasks = profileMap.map(({ profileId, proxy }) => async () => {
-    const url = websites[randomInt(0, websites.length - 1)];
+    const rawUrl = websites[randomInt(0, websites.length - 1)];
+    const url = normalizeUrl(rawUrl);  // ensure https:// prefix
+    if (url !== rawUrl) logger.info(`URL normalized: "${rawUrl}" → "${url}"`);
     try {
       await runSession(profileId, proxy, url);
     } catch (err) {
       logger.warn(`Session [${profileId}] failed: ${err.message}`);
-      // Even on failure, ensure profile is deleted from AdsPower & proxy marked used
       try { await deleteProfile(profileId); } catch (_) { }
       markProxyUsed(proxy);
     }
+    // Remove this proxy from freshPool after it is used
+    const idx = freshPool.findIndex(p => proxyKey(p) === proxyKey(proxy));
+    if (idx !== -1) freshPool.splice(idx, 1);
   });
 
-  await runPool(tasks, concurrency, config.minBrowserStartGapMs);
-
-  if (shutdownRequested) {
-    logger.info('\n=== Graceful shutdown complete — all running sessions finished ===');
-  } else {
-    logger.info('\n=== All sessions complete ===');
-  }
-  logger.info(`Used proxies saved to: ${path.resolve(config.paths.usedProxies)}`);
+  await runPool(tasks, concurrency, cfg.minBrowserStartGapMs);
+  logger.info('\n=== Batch complete ===');
+  return 'done';
 }
 
+async function main() {
+  const runMode = (process.env.RUN_MODE || 'once').toLowerCase();
+  logger.info(`=== Money Money Money Automation Starting${userId ? ` (User: ${userId})` : ''} | mode: ${runMode} ===`);
+
+  // \u2500\u2500 Load effective config: start with file defaults, overlay Supabase user settings \u2500\u2500
+  let cfg = { ...config };
+  let websites = [];
+  let allProxies = [];
+  let usedKeys = new Set();
+
+  if (supabase && userId) {
+    logger.info('Fetching data and settings from Supabase...');
+    const [wRes, pRes, uRes, sRes] = await Promise.all([
+      supabase.from('ads_website').select('url').eq('user_id', userId),
+      supabase.from('ads_proxies').select('*').eq('user_id', userId),
+      supabase.from('ads_used_proxies').select('host,port,pass').eq('user_id', userId),
+      supabase.from('ads_settings').select('data').eq('user_id', userId).single(),
+    ]);
+    websites = (wRes.data || []).map(w => normalizeUrl(w.url));
+    allProxies = (pRes.data || []).map(p => ({ ...p, protocol: p.protocol || 'socks5' }));
+    usedKeys = new Set((uRes.data || []).map(p => proxyKey(p)));
+
+    // Merge saved user settings on top of defaults so every knob works
+    if (sRes.data?.data) {
+      cfg = deepMerge(config, sRes.data.data);
+
+      // Update the active API instance with user-specific AdsPower settings
+      if (cfg.adsPower?.baseUrl) api.defaults.baseURL = cfg.adsPower.baseUrl;
+      if (cfg.adsPower?.apiKey) {
+        api.defaults.headers.common['Authorization'] = `Bearer ${cfg.adsPower.apiKey}`;
+      } else {
+        delete api.defaults.headers.common['Authorization'];
+      }
+
+      logger.info(`Settings loaded from Supabase — concurrency: ${cfg.concurrency.min}\u2013${cfg.concurrency.max}`);
+    }
+  } else {
+    websites = loadJSON(config.paths.websites).map(normalizeUrl);
+    allProxies = loadJSON(config.paths.proxies).map(parseProxyEntry).filter(Boolean);
+    usedKeys = new Set(loadJSON(config.paths.usedProxies).map(p => proxyKey(p)));
+    cfg = config; // already loaded from data/settings.json by config.js
+  }
+
+  // Make cfg accessible to runSession() via global so session timings always
+  // reflect the user's saved settings, not the hard-coded file defaults
+  global._effectiveCfg = cfg;
+
+
+  // Rebuild the AdsPower API instance in case baseUrl/apiKey changed in settings
+  if (cfg.adsPower?.baseUrl !== config.adsPower.baseUrl) {
+    api.defaults.baseURL = cfg.adsPower.baseUrl;
+    if (cfg.adsPower.apiKey)
+      api.defaults.headers['Authorization'] = `Bearer ${cfg.adsPower.apiKey}`;
+  }
+
+  if (!websites.length) { logger.warn('No websites configured.'); return; }
+
+  const freshPool = allProxies.filter(p => !usedKeys.has(proxyKey(p)));
+  logger.info(`Proxy pool: ${allProxies.length} total, ${freshPool.length} fresh, ${usedKeys.size} used.`);
+  if (!freshPool.length) { logger.warn('All proxies have been used. Exiting.'); return; }
+
+  // \u2500\u2500 Run mode logic \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  if (runMode === 'all') {
+    logger.info('Mode: RUN ALL \u2014 looping batches until all fresh proxies exhausted.');
+    let batchNum = 0;
+
+    while (freshPool.length > 0 && !shutdownRequested) {
+      // Pause between batches if requested
+      if (pauseRequested) await waitWhilePaused();
+      if (shutdownRequested) break;
+
+      batchNum++;
+      logger.info(`\n${'\u2500'.repeat(60)}`);
+      logger.info(`BATCH #${batchNum} \u2014 ${freshPool.length} fresh proxies remaining`);
+      logger.info('\u2500'.repeat(60));
+
+      const result = await runBatch(freshPool, websites, cfg);
+
+      if (['no-proxies', 'no-live'].includes(result)) {
+        logger.warn(`Batch #${batchNum} ended with "${result}" \u2014 stopping loop.`);
+        break;
+      }
+      if (['no-websites', 'no-slots'].includes(result)) {
+        logger.warn(`Batch #${batchNum} ended with "${result}" \u2014 cannot continue.`);
+        break;
+      }
+
+      if (freshPool.length > 0 && !shutdownRequested) {
+        logger.info('Cooling down 5s before next batch\u2026');
+        await sleep(5000);
+      }
+    }
+
+    logger.info(shutdownRequested
+      ? '\n=== Graceful shutdown \u2014 all sessions finished ==='
+      : `\n=== RUN ALL complete \u2014 ${batchNum} batch(es) done ===`);
+  } else {
+    logger.info('Mode: RUN ONCE \u2014 single batch then exit.');
+    await runBatch(freshPool, websites, cfg);
+    logger.info(shutdownRequested ? '\n=== Graceful shutdown complete ===' : '\n=== Run Once complete ===');
+  }
+}
+
+
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
-// On SIGINT / SIGTERM: set the flag so no NEW sessions start,
-// but let all currently-running sessions complete naturally.
 process.on('SIGINT', () => {
   if (shutdownRequested) {
     logger.warn('Force-quit — killing immediately.');

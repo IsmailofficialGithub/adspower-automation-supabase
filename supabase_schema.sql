@@ -77,7 +77,28 @@ CREATE POLICY "Users can manage their own settings"
     USING (auth.uid() = user_id)
     WITH CHECK (auth.uid() = user_id);
 
+-- ─── Logs ──────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.ads_logs (
+    id               UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id          UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    profile_id       TEXT NOT NULL,
+    website_url      TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    proxy_host       TEXT,
+    proxy_port       INTEGER,
+    status           TEXT DEFAULT 'success',
+    created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.ads_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can manage their own logs"
+    ON public.ads_logs FOR ALL
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
+
 -- ─── Indexes ──────────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS ads_proxies_user_id_idx        ON public.ads_proxies(user_id);
 CREATE INDEX IF NOT EXISTS ads_used_proxies_user_id_idx   ON public.ads_used_proxies(user_id);
 CREATE INDEX IF NOT EXISTS ads_website_user_id_idx        ON public.ads_website(user_id);
+CREATE INDEX IF NOT EXISTS ads_logs_user_id_idx           ON public.ads_logs(user_id);

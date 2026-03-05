@@ -7,12 +7,17 @@ const fs = require('fs');
 // config.js merges those on top of built-in defaults so everything still works
 // even when settings.json doesn't exist or is missing keys.
 
-const SETTINGS_FILE = path.resolve(__dirname, 'data/settings.json');
+const DATA_DIR = process.env.USER_DATA_PATH
+  ? path.join(process.env.USER_DATA_PATH, 'data')
+  : path.join(__dirname, 'data');
+
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 let userSettings = {};
 try {
   if (fs.existsSync(SETTINGS_FILE))
     userSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
 } catch (_) { }
+
 
 const defaults = {
   adsPower: {
@@ -50,9 +55,10 @@ const defaults = {
   },
 
   paths: {
-    websites: './data/websites.json',
-    proxies: './data/proxy.json',
-    usedProxies: './data/used_proxies.json',
+    websites: path.join(DATA_DIR, 'websites.json'),
+    proxies: path.join(DATA_DIR, 'proxy.json'),
+    usedProxies: path.join(DATA_DIR, 'used_proxies.json'),
+    logs: path.join(DATA_DIR, 'logs.json'),
   },
 };
 

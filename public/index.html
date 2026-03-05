@@ -4,12 +4,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AdsPower Automation Dashboard</title>
+  <title>Money Money Money</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
     rel="stylesheet" />
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <link rel="icon" type="image/png" href="logo.png" />
   <style>
     *,
     *::before,
@@ -261,6 +262,36 @@
 
     .btn-green:hover {
       background: rgba(16, 185, 129, .25);
+    }
+
+    .btn-blue {
+      background: rgba(59, 130, 246, .15);
+      color: var(--blue);
+      border: 1px solid rgba(59, 130, 246, .25);
+    }
+
+    .btn-blue:hover {
+      background: rgba(59, 130, 246, .28);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 15px rgba(59, 130, 246, .3);
+    }
+
+    .btn-amber {
+      background: rgba(245, 158, 11, .15);
+      color: var(--amber);
+      border: 1px solid rgba(245, 158, 11, .25);
+    }
+
+    .btn-amber:hover {
+      background: rgba(245, 158, 11, .28);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 15px rgba(245, 158, 11, .25);
+    }
+
+    .status-pill.paused {
+      background: rgba(245, 158, 11, .12);
+      color: var(--amber);
+      border-color: rgba(245, 158, 11, .25);
     }
 
     .btn-sm {
@@ -779,8 +810,11 @@
     <!-- ── Sidebar ──────────────────────────────────────────────── -->
     <aside class="sidebar">
       <div class="logo">
-        <div class="icon-wrap"><i data-lucide="bot" style="width:16px;height:16px;color:#fff"></i></div>
-        AdsPower
+        <div class="icon-wrap"
+          style="background: transparent; padding: 0; width: 32px; height: 32px; overflow: hidden; border-radius: 6px;">
+          <img src="logo.png" alt="Logo" style="width: 100%; height: 100%; object-fit: cover;" />
+        </div>
+        Money Money Money
       </div>
 
       <div class="nav-item active" onclick="switchTab('dashboard')">
@@ -794,6 +828,9 @@
       </div>
       <div class="nav-item" onclick="switchTab('settings')">
         <i data-lucide="settings-2"></i><span>Settings</span>
+      </div>
+      <div class="nav-item" onclick="switchTab('logs')">
+        <i data-lucide="list"></i><span>Logs</span>
       </div>
 
       <div class="sidebar-footer">
@@ -822,12 +859,26 @@
             <span id="statusText">Idle</span>
           </div>
         </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="btn btn-danger btn-sm" id="stopBtn" onclick="stopRun()" style="display:none">
+        <div style="display:flex;gap:8px;align-items:center">
+          <!-- shown only when running -->
+          <button class="btn btn-danger btn-sm" id="stopBtn" onclick="stopRun()" style="display:none"
+            title="Stop after current sessions finish">
             <i data-lucide="square"></i> Stop
           </button>
-          <button class="btn btn-primary" id="runBtn" onclick="startRun()">
-            <i data-lucide="play"></i> Run Automation
+          <button class="btn btn-amber btn-sm" id="pauseBtn" onclick="pauseRun()" style="display:none"
+            title="Pause between batches">
+            <i data-lucide="pause"></i> Pause
+          </button>
+          <button class="btn btn-green btn-sm" id="resumeBtn" onclick="resumeRun()" style="display:none"
+            title="Resume from pause">
+            <i data-lucide="play"></i> Resume
+          </button>
+          <!-- shown only when idle -->
+          <button class="btn btn-blue" id="runOnceBtn" onclick="startRun('once')" title="Run one batch then stop">
+            <i data-lucide="play"></i> Run Once
+          </button>
+          <button class="btn btn-primary" id="runAllBtn" onclick="startRun('all')" title="Loop until all proxies used">
+            <i data-lucide="repeat"></i> Run All
           </button>
         </div>
       </div>
@@ -869,7 +920,8 @@
           <div class="card full-width-card">
             <div class="card-header">
               <span class="card-title">Live Logs</span>
-              <button class="btn btn-ghost btn-sm" onclick="clearLogs()"><i data-lucide="trash-2"></i> Clear</button>
+              <button class="btn btn-ghost btn-sm" onclick="clearLiveLogs()"><i data-lucide="trash-2"></i>
+                Clear</button>
             </div>
             <div class="log-box" id="logBox">
               <span class="log-empty">Logs will appear here when automation runs…</span>
@@ -1052,6 +1104,20 @@
                 <div class="range-row"><input type="range" id="s-maxDur" min="10" max="300" step="5"
                     oninput="v('s-maxDurVal',this.value)" /><span class="range-val" id="s-maxDurVal">70</span></div>
               </div>
+            </div>
+
+            <div class="card">
+              <div class="settings-section-title">Browser Visibility</div>
+              <label class="check-row" style="gap:14px;padding:6px 0">
+                <input type="checkbox" id="s-headless" />
+                <div>
+                  <div style="font-weight:600;font-size:13px">Headless Mode (background)</div>
+                  <div style="font-size:12px;color:var(--muted);margin-top:3px">
+                    Browser windows open but are immediately minimized — run silently in the background.
+                    Automation still works fully; you won't see any browser windows on screen.
+                  </div>
+                </div>
+              </label>
             </div>
 
             <div class="card">
@@ -1332,6 +1398,45 @@
           </div>
         </div>
 
+        <!-- ── Logs Tab ──────────────────────────────────── -->
+        <div class="tab-panel" id="tab-logs">
+          <div class="card full-width-card">
+            <div class="card-header">
+              <h2 class="card-title">Success Logs</h2>
+              <div class="section-actions">
+                <button class="btn btn-ghost btn-sm" onclick="loadLogs()"
+                  style="color:var(--primary);border-color:rgba(var(--primary-rgb),.2)">
+                  <i data-lucide="refresh-cw"></i> Refresh
+                </button>
+                <button class="btn btn-ghost btn-sm" onclick="clearSuccessHistory()"
+                  style="color:var(--red);border-color:rgba(239,68,68,0.2)">
+                  <i data-lucide="trash-2"></i> Clear Logs
+                </button>
+              </div>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="table" id="logsTable">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Profile</th>
+                    <th>Website</th>
+                    <th>Proxy IP</th>
+                    <th>Duration</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="logsList">
+                  <tr>
+                    <td colspan="6" style="text-align:center;padding:40px;color:var(--muted)">No logs found. Run the
+                      automation to see results here.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
       </div><!-- /content -->
     </div><!-- /main -->
   </div><!-- /shell -->
@@ -1414,12 +1519,26 @@
       document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
       document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
       document.getElementById('tab-' + tab).classList.add('active');
-      document.querySelectorAll('.nav-item')[['dashboard', 'proxies', 'websites', 'settings'].indexOf(tab)].classList.add('active');
-      document.getElementById('pageTitle').textContent = { dashboard: 'Dashboard', proxies: 'Proxies', websites: 'Websites', settings: 'Settings' }[tab];
+
+      const tabs = ['dashboard', 'proxies', 'websites', 'settings', 'logs'];
+      const idx = tabs.indexOf(tab);
+      if (idx !== -1) {
+        document.querySelectorAll('.nav-item')[idx].classList.add('active');
+      }
+
+      document.getElementById('pageTitle').textContent = {
+        dashboard: 'Dashboard',
+        proxies: 'Proxies',
+        websites: 'Websites',
+        settings: 'Settings',
+        logs: 'Success Logs'
+      }[tab];
+
       currentTab = tab;
       if (tab === 'proxies') loadProxies();
       if (tab === 'websites') loadWebsites();
       if (tab === 'settings') loadSettings();
+      if (tab === 'logs') loadLogs();
     }
 
     // ── Toast ─────────────────────────────────────────────────────────────────────
@@ -1432,10 +1551,12 @@
       setTimeout(() => t.remove(), 3500);
     }
 
-    // ── Status polling ────────────────────────────────────────────────────────────
+    // ── Status polling ──────────────────────────────────────────────────────────────────
+    function setBtn(id, show) { const el = document.getElementById(id); if (el) el.style.display = show ? '' : 'none'; }
+
     async function updateStatus() {
-      try {
-        const s = await fetch('/api/stats').then(r => r.json());
+      // 1. Fetch Stats (Cards)
+      fetch('/api/stats').then(r => r.json()).then(s => {
         document.getElementById('s-total').textContent = s.totalProxies;
         document.getElementById('s-used').textContent = s.usedProxies;
         document.getElementById('s-fresh').textContent = s.freshProxies;
@@ -1443,29 +1564,37 @@
         document.getElementById('s-fresh-sub').textContent = `${s.freshProxies} fresh`;
         const pct = s.totalProxies ? Math.round(s.usedProxies / s.totalProxies * 100) : 0;
         document.getElementById('s-pct').textContent = `${pct}% consumed`;
+      }).catch(_ => { });
 
+      // 2. Fetch Run Status (Buttons)
+      fetch('/api/status').then(r => r.json()).then(st => {
         const pill = document.getElementById('statusPill');
         const dot = document.getElementById('statusDot');
         const txt = document.getElementById('statusText');
-        const runBtn = document.getElementById('runBtn');
-        const stopBtn = document.getElementById('stopBtn');
-        if (s.running) {
+
+        if (st.running && st.paused) {
+          pill.className = 'status-pill paused';
+          dot.className = 'dot';
+          txt.textContent = '⏸ Paused';
+          setBtn('stopBtn', true); setBtn('pauseBtn', false); setBtn('resumeBtn', true);
+          setBtn('runOnceBtn', false); setBtn('runAllBtn', false);
+        } else if (st.running) {
           pill.className = 'status-pill running';
           dot.className = 'dot pulse';
           txt.textContent = 'Running';
-          runBtn.style.display = 'none';
-          stopBtn.style.display = '';
+          setBtn('stopBtn', true); setBtn('pauseBtn', true); setBtn('resumeBtn', false);
+          setBtn('runOnceBtn', false); setBtn('runAllBtn', false);
         } else {
           pill.className = 'status-pill idle';
           dot.className = 'dot';
           txt.textContent = 'Idle';
-          runBtn.style.display = '';
-          stopBtn.style.display = 'none';
+          setBtn('stopBtn', false); setBtn('pauseBtn', false); setBtn('resumeBtn', false);
+          setBtn('runOnceBtn', true); setBtn('runAllBtn', true);
         }
-      } catch (_) { }
+      }).catch(_ => { });
     }
-    // Poll stats every 10 seconds (to stay within Supabase limits)
-    setInterval(updateStatus, 10000);
+    // Poll stats every 5 seconds
+    setInterval(updateStatus, 5000);
     updateStatus();
 
     // ── Log SSE ───────────────────────────────────────────────────────────────────
@@ -1488,21 +1617,53 @@
       div.textContent = line;
       logBox.appendChild(div);
       logBox.scrollTop = logBox.scrollHeight;
+
+      // Auto-refresh status as soon as the process signals it has finished
+      if (
+        line.includes('EXITED') ||
+        line.includes('Run Once complete') ||
+        line.includes('RUN ALL complete') ||
+        line.includes('Graceful shutdown') ||
+        line.includes('Batch complete')
+      ) {
+        // Trigger status updates with slightly varied delays to catch the server's session-map removal
+        updateStatus();
+        setTimeout(updateStatus, 1500);
+        setTimeout(updateStatus, 4500);
+      }
     };
 
-    function clearLogs() { logBox.innerHTML = '<span class="log-empty">Cleared.</span>'; logEmpty = true; }
+    function clearLiveLogs() { logBox.innerHTML = '<span class="log-empty">Cleared.</span>'; logEmpty = true; }
 
-    // ── Run / Stop ────────────────────────────────────────────────────────────────
-    async function startRun() {
-      const r = await fetch('/api/run', { method: 'POST' }).then(r => r.json()).catch(e => ({ error: e.message }));
+    // ── Run / Stop / Pause / Resume ───────────────────────────────────────────────────
+    // runMode: 'once' (single batch, default) | 'all' (loop until proxies exhausted)
+    async function startRun(runMode = 'once') {
+      const label = runMode === 'all' ? 'Run All (loop)' : 'Run Once';
+      const r = await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runMode }),
+      }).then(r => r.json()).catch(e => ({ error: e.message }));
       if (r.error) toast(r.error, 'error');
-      else { toast('Automation started!', 'success'); updateStatus(); switchTab('dashboard'); }
+      else { toast(`💰 Automation started — ${label}!`, 'success'); updateStatus(); switchTab('dashboard'); }
     }
 
     async function stopRun() {
       await fetch('/api/stop', { method: 'POST' });
-      toast('Stopping automation…', 'info');
+      toast('⏹ Stopping automation…', 'info');
       updateStatus();
+    }
+
+    async function pauseRun() {
+      const r = await fetch('/api/pause', { method: 'POST' }).then(r => r.json()).catch(e => ({ error: e.message }));
+      if (r.error) toast(r.error, 'error');
+      else { toast('⏸ Automation paused — current sessions will finish', 'info'); updateStatus(); }
+    }
+
+    async function resumeRun() {
+      const r = await fetch('/api/resume', { method: 'POST' }).then(r => r.json()).catch(e => ({ error: e.message }));
+      if (r.error) toast(r.error, 'error');
+      else { toast('▶ Automation resumed!', 'success'); updateStatus(); }
     }
 
     // ── Proxies ───────────────────────────────────────────────────────────────────
@@ -1543,6 +1704,40 @@
     </tr>
   `).join('');
       lucide.createIcons();
+    }
+
+    // ── Logs ──────────────────────────────────────────────────────────────────────
+    async function loadLogs() {
+      toast('Refreshing logs...', 'info');
+      const logs = await fetch('/api/success-logs').then(r => r.json());
+      const tbody = document.getElementById('logsList');
+      if (!logs.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--muted)">No logs found. Run the automation to see results here.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = logs.map(l => `
+          <tr>
+            <td style="font-size:12px;color:var(--muted)">${new Date(l.created_at).toLocaleString()}</td>
+            <td style="font-family:monospace;font-size:11px">${escHtml(l.profile_id)}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(l.website_url)}">
+              <a href="${escHtml(l.website_url)}" target="_blank" style="color:var(--primary);text-decoration:none">${escHtml(l.website_url)}</a>
+            </td>
+            <td style="font-family:monospace;font-size:11px">${escHtml(l.proxy_host)}:${l.proxy_port}</td>
+            <td>${l.duration_seconds}s</td>
+            <td><span class="badge badge-fresh" style="background:rgba(34,197,94,0.1);color:#22c55e">success</span></td>
+          </tr>
+        `).join('');
+    }
+
+    async function clearSuccessHistory() {
+      if (!confirm('Are you sure you want to clear all success logs?')) return;
+      const r = await fetch('/api/success-logs/clear', { method: 'POST' }).then(r => r.json());
+      if (r.ok) {
+        toast('Logs cleared!', 'success');
+        loadLogs();
+      } else {
+        toast('Failed to clear logs: ' + (r.error || 'Unknown error'), 'error');
+      }
     }
 
     function toggleSelectAll(cb) {
@@ -1633,15 +1828,28 @@
       lucide.createIcons();
     }
 
+    // Normalize a URL — auto-prepend https:// if no protocol given
+    function normalizeUrl(raw) {
+      const s = (raw || '').trim();
+      if (!s) return s;
+      if (/^https?:\/\//i.test(s)) return s;
+      if (/^[a-z][a-z0-9+\-.]*:\/\//i.test(s)) return s;
+      return 'https://' + s;
+    }
+
     async function addWebsite() {
-      const url = document.getElementById('siteUrl').value.trim();
-      if (!url) { toast('Enter a URL', 'error'); return; }
+      const raw = document.getElementById('siteUrl').value.trim();
+      if (!raw) { toast('Enter a URL', 'error'); return; }
+      const url = normalizeUrl(raw);
+      // Update the input field so the user sees the corrected URL
+      document.getElementById('siteUrl').value = url;
       const r = await fetch('/api/websites/add', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url })
       }).then(r => r.json());
       document.getElementById('siteUrl').value = '';
-      toast('Website added', 'success');
+      const saved = r.url || url;
+      toast(`Website added: ${saved}`, 'success');
       loadWebsites(); updateStatus();
     }
 
@@ -1678,6 +1886,9 @@
       document.getElementById('s-mac-max').value = settings.proxySampling?.mac?.max ?? 8;
       document.getElementById('s-and-min').value = settings.proxySampling?.android?.min ?? 3;
       document.getElementById('s-and-max').value = settings.proxySampling?.android?.max ?? 12;
+
+      // Browser Visibility (Headless)
+      chk('s-headless', settings.headlessMode || false);
 
       // Profile basic
       sel('s-groupId', settings.groupId || '0');
@@ -1759,6 +1970,7 @@
         },
         concurrency: { min: +gv('s-minConc'), max: +gv('s-maxConc') },
         minBrowserStartGapMs: +gv('s-gap'),
+        headlessMode: gc('s-headless'),
         session: {
           minDurationSeconds: +gv('s-minDur'),
           maxDurationSeconds: +gv('s-maxDur'),
