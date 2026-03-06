@@ -386,29 +386,55 @@ function spawnAutomation(userId, runMode) {
             RUN_MODE: runMode,
             ELECTRON_RUN_AS_NODE: '1'
         },
+        silent: true,  // Piped stdout, stderr, and stdin
         stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+        execPath: process.execPath, // Ensure we use the same Electron binary
     };
+
+    console.log(`[server] Spawning automation: ${scriptPath} in ${realCwd}`);
+    broadcastToUser(userId, `[system] Initializing engine process...`);
 
     try {
         const proc = fork(scriptPath, [], options);
         userAutomations.set(userId, proc);
 
-        const pipe = d => d.toString().split('\n').filter(Boolean).forEach(line => broadcastToUser(userId, line));
+        const pipe = d => {
+            if (!d) return;
+            d.toString().split(/\r?\n/).forEach(line => {
+                const trimmed = line.trim();
+                if (trimmed) broadcastToUser(userId, trimmed);
+            });
+        };
 
-        if (proc.stdout) proc.stdout.on('data', pipe);
-        if (proc.stderr) proc.stderr.on('data', pipe);
+        if (proc.stdout) {
+            proc.stdout.on('data', pipe);
+            console.log(`[server] Automation stdout piped (pid ${proc.pid})`);
+        }
+        if (proc.stderr) {
+            proc.stderr.on('data', pipe);
+            console.log(`[server] Automation stderr piped (pid ${proc.pid})`);
+        }
+
+        proc.on('spawn', () => {
+            console.log(`[server] Automation process spawned (pid ${proc.pid})`);
+            broadcastToUser(userId, `[system] Engine process spawned (pid ${proc.pid})`);
+        });
 
         proc.on('error', (err) => {
+            console.error(`[server] Failed to start automation process:`, err);
             broadcastToUser(userId, `!!! ERROR spawning automation: ${err.message}`);
         });
 
         proc.on('close', code => {
+            console.log(`[server] Automation process exited with code ${code}`);
             broadcastToUser(userId, `=== EXITED (code ${code ?? 0}) ===`);
             userAutomations.delete(userId);
             userPauseStates.delete(userId);
         });
+
         return proc;
     } catch (err) {
+        console.error(`[server] Critical error spawning automation:`, err);
         broadcastToUser(userId, `!!! CRITICAL ERROR: ${err.message}`);
         return null;
     }
