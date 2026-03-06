@@ -6,7 +6,7 @@
  * Run: node server.js  →  http://localhost:3000
  */
 
-require('dotenv').config();
+require('dotenv').config({ path: process.env.DOTENV_CONFIG_PATH || '.env' });
 
 const express = require('express');
 const path = require('path');
@@ -68,6 +68,9 @@ const IS_LOCAL_MODE = !SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_K
 
 if (IS_LOCAL_MODE) {
     console.warn('\n⚠️  Supabase environment variables missing. RUNNING IN LOCAL MODE.');
+    console.log('    SUPABASE_URL:', SUPABASE_URL ? 'PRESENT' : 'MISSING');
+    console.log('    SUPABASE_ANON_KEY:', SUPABASE_ANON_KEY ? 'PRESENT' : 'MISSING');
+    console.log('    SUPABASE_SERVICE_ROLE_KEY:', SUPABASE_SERVICE_KEY ? 'PRESENT' : 'MISSING');
     console.warn('    Local storage (JSON) will be used instead of Supabase.\n');
 }
 
@@ -143,6 +146,10 @@ app.post('/api/auth/signup', async (req, res) => {
             user: { id: data.user?.id, email: data.user?.email }
         });
     } catch (err) {
+        console.error('[auth:signup] Critical error:', err.message);
+        if (IS_LOCAL_MODE) {
+            return res.status(503).json({ error: 'Sign up unavailable in Local Mode. Please provide Supabase credentials in .env' });
+        }
         res.status(500).json({ error: 'Sign up failed: Could not connect to Supabase.' });
     }
 });
@@ -164,6 +171,10 @@ app.post('/api/auth/login', async (req, res) => {
             user: { id: data.user.id, email: data.user.email }
         });
     } catch (err) {
+        console.error('[auth:login] Critical error:', err.message);
+        if (IS_LOCAL_MODE) {
+            return res.status(503).json({ error: 'Auth unavailable in Local Mode. Please provide Supabase credentials in .env' });
+        }
         res.status(500).json({ error: 'Auth failed: Could not connect to Supabase.' });
     }
 });

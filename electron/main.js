@@ -16,6 +16,7 @@ const path = require('path');
 const { spawn, fork } = require('child_process');
 const waitOn = require('wait-on');
 const dotenv = require('dotenv');
+const fs = require('fs');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 // In production, PROJECT_ROOT is where the asar is. We use the asar file path 
@@ -24,7 +25,15 @@ const APP_PATH = app.isPackaged ? path.join(process.resourcesPath, 'app.asar') :
 const SPAWN_CWD = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..');
 const USER_DATA = app.getPath('userData');
 
-dotenv.config({ path: path.join(APP_PATH, '.env') });
+const ENV_INTERNAL = path.join(APP_PATH, '.env');
+const ENV_EXTERNAL = path.join(SPAWN_CWD, '.env');
+
+// Load environment variables. Priority: External .env (if exists) > Internal .env
+dotenv.config({ path: fs.existsSync(ENV_EXTERNAL) ? ENV_EXTERNAL : ENV_INTERNAL });
+
+// Overwrite the pass-through variable for the server process
+const FINAL_ENV_PATH = fs.existsSync(ENV_EXTERNAL) ? ENV_EXTERNAL : ENV_INTERNAL;
+console.log(`[electron] Using configuration from: ${FINAL_ENV_PATH}`);
 const SERVER_PORT = process.env.PORT || 3000;
 const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
 const PRELOAD = app.isPackaged
@@ -61,7 +70,7 @@ function startServer() {
 
     const env = {
         ...process.env,
-        DOTENV_CONFIG_PATH: path.join(APP_PATH, '.env'),
+        DOTENV_CONFIG_PATH: FINAL_ENV_PATH,
         ELECTRON_RUN_AS_NODE: '1',
         USER_DATA_PATH: USER_DATA, // Pass writable path to child
     };
