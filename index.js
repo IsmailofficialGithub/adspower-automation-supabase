@@ -253,7 +253,11 @@ async function removeProxyFromAdsPower(proxyHost) {
 }
 
 async function removeProxyFromSource(proxy) {
-  // 1. Remove from database
+  // 1. Skip permanent removal — we want to keep them in our list even if they fail a test.
+  // When running in 'all' mode, we'll still remove them from the in-memory batch pool
+  // so we don't keep retrying them, but they stay in Supabase / local file.
+
+  /*
   if (supabase && userId) {
     const { error } = await supabase.from('ads_proxies')
       .delete()
@@ -274,10 +278,12 @@ async function removeProxyFromSource(proxy) {
       logger.info(`Failed proxy permanently removed from local file: ${proxy.host}:${proxy.port}`);
     }
   }
+  */
 
-  // 2. Remove associated profiles from AdsPower
+  // 2. Remove associated profiles from AdsPower (this is safe cleanup)
   await removeProxyFromAdsPower(proxy.host);
 }
+
 
 async function logSessionSuccess(profileId, websiteUrl, durationSeconds, proxy) {
   if (supabase && userId) {
@@ -358,11 +364,37 @@ async function fetchExistingProfileCount() {
 }
 
 /**
- * Build the fingerprint config from settings, applying all AdsPower options.
- * Falls back to sensible defaults when a setting isn't configured.
+ * Determines the 'actual' OS that should be used for a profile.
+ * - If the proxy host/user contains 'mobile', it FORCES Android.
+ * - If the proxy OS is 'windows' (the default), it applies a random mix for diversity.
+ * - Otherwise, it respects the user's explicit OS choice.
  */
-function buildFingerprintConfig(proxy, fp) {
-  const osPlatform = OS_PLATFORM[(proxy.os || 'windows').toLowerCase()] ?? 0;
+function getEffectiveOS(proxy) {
+  const host = (proxy.host || '').toLowerCase();
+  const user = (proxy.user || '').toLowerCase();
+  const pass = (proxy.pass || '').toLowerCase();
+  const savedOs = (proxy.os || 'windows').toLowerCase();
+
+  // 1. Force Mobile if 'mobile' keywords found
+  if (host.includes('mobile') || user.includes('mobile') || pass.includes('mobile')) {
+    return 'android';
+  }
+
+  // 2. If it's the default 'windows', we provide some variety (60% Win, 20% Mac, 20% Android)
+  // unless it's explicitly set to something else.
+  if (savedOs === 'windows') {
+    const roll = Math.random();
+    if (roll < 0.60) return 'windows';
+    if (roll < 0.80) return 'mac';
+    return 'android';
+  }
+
+  return savedOs;
+}
+
+function buildFingerprintConfig(proxy, fp, effectiveOs) {
+  const osPlatform = OS_PLATFORM[effectiveOs] ?? 0;
+
 
   // Screen resolution
   let resolution = '1366x768';
@@ -466,12 +498,12 @@ function buildFingerprintConfig(proxy, fp) {
   // ua_version MUST NOT be an empty array; omit it to mean "any version".
   if (fp?.randomFingerprint) {
     try {
-      const osName = (proxy.os || 'windows').toLowerCase();
-      const browserOs = osName === 'mac' ? 'mac' : osName === 'android' ? 'android' : 'win';
+      const browserOs = effectiveOs === 'mac' ? 'mac' : effectiveOs === 'android' ? 'android' : 'win';
       fingerprintResult.random_ua = JSON.stringify({
         ua_browser: ['chrome'],
         ua_os: [browserOs],
       });
+
     } catch (_) {
       // If anything goes wrong building random_ua, skip it — don't break profile creation
     }
@@ -480,7 +512,7 @@ function buildFingerprintConfig(proxy, fp) {
   return fingerprintResult;
 }
 
-async function createProfile(proxy, name) {
+async function createProfile(proxy, name, effectiveOs) {
   let userSettings = {};
   if (supabase && userId) {
     const { data } = await supabase.from('ads_settings').select('data').eq('user_id', userId).single();
@@ -498,7 +530,7 @@ async function createProfile(proxy, name) {
   }
 
   const fp = userSettings.fingerprint || {};
-  const fingerprintConfig = buildFingerprintConfig(proxy, fp);
+  const fingerprintConfig = buildFingerprintConfig(proxy, fp, effectiveOs);
 
   // Open URLs for profile tabs
   const openUrls = Array.isArray(userSettings.openUrls) && userSettings.openUrls.length
@@ -527,9 +559,12 @@ async function createProfile(proxy, name) {
   const res = await apiCall(() => api.post('/api/v1/user/create', body), 'createProfile');
   if (res.data.code !== 0) throw new Error(`Profile create failed: ${res.data.msg}`);
   const profileId = res.data.data.id;
-  logger.info(`Created profile [${profileId}] "${name}" (${proxy.os}) via ${proxy.protocol}://${proxy.host}:${proxy.port}`);
-  return profileId;
+
+  logger.info(`Created profile [${profileId}] "${name}" (${effectiveOs}) via ${proxy.protocol}://${proxy.host}:${proxy.port}`);
+  return { profileId, effectiveOs };
 }
+
+
 
 async function activateProfile(profileId, { headless = false } = {}) {
   const params = { user_id: profileId };
@@ -667,32 +702,96 @@ async function navigateViaSearch(page, profileId, targetUrl) {
     return navigateDirect(page, profileId, targetUrl);
   }
 
-  // Dismiss cookie/consent dialogs (crucial for mobile profiles)
+  // Dismiss cookie/consent dialogs (crucial for both desktop and mobile profiles)
   await page.evaluate(() => {
-    const btns = Array.from(document.querySelectorAll('button, [role="button"], a'));
-    const accept = btns.find(b => /accept all|accept|agree|got it|i agree|allow all/i.test(b.innerText || b.textContent));
-    if (accept) accept.click();
+    // Look for all interactive elements
+    const elements = Array.from(document.querySelectorAll('button, [role="button"], a, div[role="button"]'));
+    // Filter for common "Accept" labels
+    const acceptStrings = /Accept all|Accept|Agree|Got it|I agree|Allow all|Accept cookies|Confirm/i;
+
+    // Prioritize actual buttons first
+    const acceptBtn = elements.find(el => {
+      const text = (el.innerText || el.textContent || '').trim();
+      return acceptStrings.test(text);
+    });
+
+    if (acceptBtn) {
+      acceptBtn.click();
+      return true;
+    }
+    return false;
+  }).then(clicked => {
+    if (clicked) logger.debug(`[${profileId}] [Google] Dismissed consent popup.`);
   }).catch(() => { });
-  await sleep(randomInt(800, 1500));
+
+  await sleep(randomInt(1200, 2000));
+
+  // Wait for the search box to appear
+  logger.debug(`[${profileId}] [Google] Waiting for search interface…`);
+  await sleep(1500);
 
   // Find search box — mobile layout may use different selectors
-  let searchBox;
-  for (const sel of ['textarea[name="q"]', 'input[name="q"]', '[role="combobox"]', 'input[type="search"]']) {
-    searchBox = await page.$(sel);
-    if (searchBox) break;
+  let searchBox = null;
+  const selectors = [
+    'textarea[name="q"]',
+    'input[name="q"]',
+    '[role="combobox"]',
+    'input[type="search"]',
+    'input.gLFyf',
+    '#APjFqb' // Modern Google desktop ID
+  ];
+
+  for (const sel of selectors) {
+    try {
+      const el = await page.$(sel);
+      if (el) {
+        const isVisible = await el.evaluate(node => {
+          const style = window.getComputedStyle(node);
+          return style.display !== 'none' && style.visibility !== 'hidden' && node.offsetHeight > 0;
+        });
+        if (isVisible) {
+          searchBox = el;
+          logger.debug(`[${profileId}] [Google] Found search box using: ${sel}`);
+          break;
+        }
+      }
+    } catch (_) { }
   }
+
   if (!searchBox) {
-    logger.warn(`[${profileId}] Search box not found — falling back to direct nav`);
+    const htmlSnippet = await page.evaluate(() => document.body.innerHTML.slice(0, 1000)).catch(() => 'no-html');
+    logger.warn(`[${profileId}] [Google] Search interface unrecognized (HTML start: ${htmlSnippet.replace(/\n/g, '')}) — falling back to direct nav`);
     return navigateDirect(page, profileId, targetUrl);
   }
 
-  await searchBox.click();
-  await sleep(randomInt(400, 900));
-  for (const char of domain) {
-    await page.keyboard.type(char, { delay: randomInt(60, 190) });
+
+  logger.debug(`[${profileId}] [Google] Found search box. Clicking and focusing…`);
+
+  try {
+    // Explicitly focus and click to ensure the keyboard input goes to the right place
+    await searchBox.focus();
+    await searchBox.click({ clickCount: 3 }); // triple click to select any existing text
+    await page.keyboard.press('Backspace');   // clear it
+    await sleep(randomInt(600, 1000));
+
+    logger.info(`[${profileId}] [Google] Typing domain: ${domain}`);
+
+    // Type directly into the search box instead of global keyboard for better reliability
+    // but still using human-like delays for each character.
+    for (const char of domain) {
+      if (shutdownRequested) break;
+      await searchBox.type(char, { delay: randomInt(150, 350) });
+    }
+
+
+    await sleep(randomInt(800, 1200));
+    logger.debug(`[${profileId}] [Google] Pressing Enter…`);
+    await page.keyboard.press('Enter');
+  } catch (err) {
+    logger.warn(`[${profileId}] [Google] Typing failed: ${err.message} — falling back to direct nav`);
+    return navigateDirect(page, profileId, targetUrl);
   }
-  await sleep(randomInt(400, 900));
-  await page.keyboard.press('Enter');
+
 
   // Wait for SERP
   try {
@@ -806,11 +905,17 @@ async function navigateViaRedirect(page, profileId, targetUrl) {
  */
 async function navigateToTarget(page, profileId, targetUrl, os = 'windows') {
   const isMobile = (os || '').toLowerCase() === 'android';
+  const roll = Math.random();
+
+  // We prioritize 'Google Search' (typing behavior) as requested by the user.
+  // We use weights to keep it natural but favor the typing strategy heavily.
 
   if (isMobile) {
-    // Mobile: skip Google entirely to avoid stuck sessions
-    const roll = Math.random();
-    if (roll < 0.60) {
+    // Mobile: 80% Google Search | 10% Direct | 10% Redirect
+    if (roll < 0.80) {
+      logger.info(`[${profileId}] [Mobile] Strategy: Google Search (Typing)`);
+      return navigateViaSearch(page, profileId, targetUrl);
+    } else if (roll < 0.90) {
       logger.info(`[${profileId}] [Mobile] Strategy: Direct`);
       return navigateDirect(page, profileId, targetUrl);
     } else {
@@ -818,12 +923,11 @@ async function navigateToTarget(page, profileId, targetUrl, os = 'windows') {
       return navigateViaRedirect(page, profileId, targetUrl);
     }
   } else {
-    // Desktop: random mix including Google
-    const roll = Math.random();
-    if (roll < 0.50) {
-      logger.info(`[${profileId}] [Desktop] Strategy: Google Search`);
+    // Desktop: 90% Google Search | 5% Direct | 5% Redirect
+    if (roll < 0.90) {
+      logger.info(`[${profileId}] [Desktop] Strategy: Google Search (Typing)`);
       return navigateViaSearch(page, profileId, targetUrl);
-    } else if (roll < 0.75) {
+    } else if (roll < 0.95) {
       logger.info(`[${profileId}] [Desktop] Strategy: Direct`);
       return navigateDirect(page, profileId, targetUrl);
     } else {
@@ -833,9 +937,10 @@ async function navigateToTarget(page, profileId, targetUrl, os = 'windows') {
   }
 }
 
+
 // ─── Session ──────────────────────────────────────────────────────────────────
 
-async function runSession(profileId, proxy, url) {
+async function runSession(profileId, proxy, url, effectiveOs) {
   let browser = null;
   let cleanedUp = false;
 
@@ -883,7 +988,7 @@ async function runSession(profileId, proxy, url) {
     // We give 130s so the strategy always has room to complete before the hard cap fires.
     const NAV_TIMEOUT_MS = 130000;
     await Promise.race([
-      navigateToTarget(page, profileId, url, proxy.os),
+      navigateToTarget(page, profileId, url, effectiveOs),
       sleep(NAV_TIMEOUT_MS).then(() => {
         logger.warn(`[${profileId}] Navigation hard-cap (${NAV_TIMEOUT_MS / 1000}s) reached.`);
       }),
@@ -1032,11 +1137,14 @@ async function runBatch(freshPool, websites, cfg) {
 
     testedProxies.push(proxy);
     const ok = await testProxy(proxy);
+    const effectiveOs = getEffectiveOS(proxy);
+
     if (ok) {
-      logger.info(`  ✓ LIVE   ${proxy.protocol}://${proxy.host}:${proxy.port} [${proxy.os}]  (${liveProxies.length + 1}/${targetLive})`);
+      logger.info(`  ✓ LIVE   ${proxy.protocol}://${proxy.host}:${proxy.port} [${effectiveOs}]  (${liveProxies.length + 1}/${targetLive})`);
       liveProxies.push(proxy);
     } else {
-      logger.warn(`  \u2717 DEAD   ${proxy.protocol}://${proxy.host}:${proxy.port} [${proxy.os}] \u2014 removing from pool`);
+      logger.warn(`  \u2717 DEAD   ${proxy.protocol}://${proxy.host}:${proxy.port} [${effectiveOs}] \u2014 skipping for this session`);
+
       await removeProxyFromSource(proxy);
       // Remove dead proxy from the caller's copy of freshPool
       const idx = freshPool.findIndex(p => proxyKey(p) === proxyKey(proxy));
@@ -1077,13 +1185,18 @@ async function runBatch(freshPool, websites, cfg) {
   for (let i = 0; i < toCreate.length; i++) {
     if (shutdownRequested) { logger.warn('Shutdown requested — stopping profile creation early.'); break; }
     const proxy = toCreate[i];
-    const name = `auto_${proxy.os}_${Date.now()}_${i}`;
+
+    // Detect OS first so we can name it correctly in AdsPower
+    const effectiveOs = getEffectiveOS(proxy);
+    const name = `auto_${effectiveOs}_${Date.now()}_${i}`;
+
     try {
-      const profileId = await createProfile(proxy, name);
-      profileMap.push({ profileId, proxy });
+      const result = await createProfile(proxy, name, effectiveOs);
+      profileMap.push({ profileId: result.profileId, effectiveOs: result.effectiveOs, proxy });
     } catch (err) {
-      logger.warn(`Profile create failed (${proxy.os}): ${err.message}`);
+      logger.warn(`Profile create failed (${effectiveOs}): ${err.message}`);
     }
+
     await sleep(randomInt(1500, 2000));
   }
   if (!profileMap.length) { logger.error('No profiles created. Aborting batch.'); return 'no-profiles'; }
@@ -1095,12 +1208,12 @@ async function runBatch(freshPool, websites, cfg) {
   logger.info(`\n${profileMap.length} profile(s) ready. Running ${concurrency} browser(s) at a time.`);
 
   // ── 5. Run sessions ─────────────────────────────────────────────────────
-  const tasks = profileMap.map(({ profileId, proxy }) => async () => {
+  const tasks = profileMap.map(({ profileId, effectiveOs, proxy }) => async () => {
     const rawUrl = websites[randomInt(0, websites.length - 1)];
     const url = normalizeUrl(rawUrl);  // ensure https:// prefix
     if (url !== rawUrl) logger.info(`URL normalized: "${rawUrl}" → "${url}"`);
     try {
-      await runSession(profileId, proxy, url);
+      await runSession(profileId, proxy, url, effectiveOs);
     } catch (err) {
       logger.warn(`Session [${profileId}] failed: ${err.message}`);
       try { await deleteProfile(profileId); } catch (_) { }
