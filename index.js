@@ -82,7 +82,7 @@ const supabase = (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_
   : null;
 
 // ─── OS → AdsPower platform ID ───────────────────────────────────────────────
-const OS_PLATFORM = { windows: 0, mac: 1, android: 3 };
+const OS_PLATFORM = { windows: 0, mac: 1, ios: 2, iphone: 2, android: 3 };
 
 // ─── Control flags ────────────────────────────────────────────────────────
 let shutdownRequested = false;
@@ -166,46 +166,55 @@ function parseProxyEntry(entry) {
   if (entry && typeof entry === 'object') return entry; // already object form
 
   if (typeof entry === 'string') {
-    const m = entry.match(/^(socks5|socks4|https?):\/\/(.+)$/);
-    if (!m) return null;
+    try {
+      const m = entry.match(/^(socks5|socks4|https?):\/\/(.+)$/);
+      if (!m) return null;
 
-    const parts = m[2].split(':');
-    if (parts.length < 4) return null;
+      const parts = m[2].split(':');
+      if (parts.length < 4) return null;
 
-    const host = parts[0];
-    const port = parseInt(parts[1], 10);
-    const user = parts[2];
+      const host = parts[0];
+      const port = parseInt(parts[1], 10);
+      const user = parts[2];
 
-    const knownOs = ['windows', 'mac', 'android', 'linux'];
-    const lastPart = parts[parts.length - 1].toLowerCase();
-    let os = 'windows';
-    let pass;
-    if (knownOs.includes(lastPart)) {
-      os = lastPart;
-      pass = parts.slice(3, -1).join(':');
-    } else {
-      pass = parts.slice(3).join(':');
+      const knownOs = ['windows', 'mac', 'android', 'linux', 'ios', 'iphone'];
+      const lastPart = parts[parts.length - 1].toLowerCase();
+      let os = 'windows';
+      let pass;
+      if (knownOs.includes(lastPart)) {
+        os = lastPart;
+        pass = parts.slice(3, -1).join(':');
+      } else {
+        pass = parts.slice(3).join(':');
+      }
+
+      if (!host || isNaN(port) || !user || !pass) return null;
+      return { host, port, user, pass, protocol: m[1].toLowerCase(), os };
+    } catch (err) {
+      return null;
     }
-
-    if (!host || isNaN(port) || !user || !pass) return null;
-    return { host, port, user, pass, protocol: m[1], os };
   }
 
   return null;
 }
 
 function sampleProxiesForOS(pool, os, count) {
-  const candidates = pool.filter(p => (p.os || '').toLowerCase() === os);
-  for (let i = candidates.length - 1; i > 0; i--) {
+  const candidates = pool.filter(p => {
+    const pOs = (p.os || 'windows').toLowerCase();
+    if (os === 'ios') return ['ios', 'iphone'].includes(pOs);
+    return pOs === os;
+  });
+
+  // Shuffle copies
+  const shuffled = [...candidates];
+  for (let i = shuffled.length - 1; i > 0; i--) {
     const j = randomInt(0, i);
-    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
-  return candidates.slice(0, Math.min(count, candidates.length));
+  return shuffled.slice(0, Math.min(count, shuffled.length));
 }
 
-function proxyKey(proxy) {
-  return `${proxy.host}:${proxy.port}:${proxy.pass || ''}`;
-}
+function proxyKey(p) { return `${p.host}:${p.port}`; }
 
 async function markProxyUsed(proxy) {
   if (supabase && userId) {
@@ -285,7 +294,7 @@ async function removeProxyFromSource(proxy) {
 }
 
 
-async function logSessionSuccess(profileId, websiteUrl, durationSeconds, proxy) {
+async function logSessionSuccess(profileId, websiteUrl, durationSeconds, proxy, status = 'success') {
   if (supabase && userId) {
     const { error } = await supabase.from('ads_logs').insert({
       user_id: userId,
@@ -294,16 +303,16 @@ async function logSessionSuccess(profileId, websiteUrl, durationSeconds, proxy) 
       duration_seconds: durationSeconds,
       proxy_host: proxy.host,
       proxy_port: proxy.port,
-      status: 'success'
+      status: status
     });
-    if (error) logger.warn(`Failed to save success log to Supabase: ${error.message}`);
-    else logger.info(`[${profileId}] Success log saved to Supabase.`);
+    if (error) logger.warn(`Failed to save log to Supabase: ${error.message}`);
+    else logger.info(`[${profileId}] log saved to Supabase (status: ${status}).`);
   } else {
     const logs = loadJSON(config.paths.logs);
     logs.push({
       profileId, websiteUrl, durationSeconds,
       proxyHost: proxy.host, proxyPort: proxy.port,
-      status: 'success', timestamp: new Date().toISOString()
+      status: status, timestamp: new Date().toISOString()
     });
     saveJSON(config.paths.logs, logs);
   }
@@ -375,20 +384,13 @@ function getEffectiveOS(proxy) {
   const pass = (proxy.pass || '').toLowerCase();
   const savedOs = (proxy.os || 'windows').toLowerCase();
 
-  // 1. Force Mobile if 'mobile' keywords found
+  // 1. Force Mobile if 'mobile' keywords found in proxy details
   if (host.includes('mobile') || user.includes('mobile') || pass.includes('mobile')) {
     return 'android';
   }
 
-  // 2. If it's the default 'windows', we provide some variety (60% Win, 20% Mac, 20% Android)
-  // unless it's explicitly set to something else.
-  if (savedOs === 'windows') {
-    const roll = Math.random();
-    if (roll < 0.60) return 'windows';
-    if (roll < 0.80) return 'mac';
-    return 'android';
-  }
-
+  // 2. Return the saved OS (defaults to 'windows' if not specified)
+  // We removed the randomization logic that was forcing a mix of OS types.
   return savedOs;
 }
 
@@ -496,13 +498,15 @@ function buildFingerprintConfig(proxy, fp, effectiveOs) {
   // Only add random_ua when enabled.
   // AdsPower requires it as a JSON *string* with specific keys — omit entirely when off.
   // ua_version MUST NOT be an empty array; omit it to mean "any version".
-  if (fp?.randomFingerprint) {
+  // Force AdsPower to generate a User-Agent for the correct OS if no custom UA is provided.
+  // AdsPower expects random_ua as an object within the JSON payload.
+  if (fp?.randomFingerprint || !fp?.userAgent) {
     try {
-      const browserOs = effectiveOs === 'mac' ? 'mac' : effectiveOs === 'android' ? 'android' : 'win';
-      fingerprintResult.random_ua = JSON.stringify({
+      const browserOs = effectiveOs === 'mac' ? 'mac' : (effectiveOs === 'android' ? 'android' : (effectiveOs === 'ios' || effectiveOs === 'iphone' ? 'ios' : 'win'));
+      fingerprintResult.random_ua = {
         ua_browser: ['chrome'],
         ua_os: [browserOs],
-      });
+      };
 
     } catch (_) {
       // If anything goes wrong building random_ua, skip it — don't break profile creation
@@ -940,7 +944,7 @@ async function navigateToTarget(page, profileId, targetUrl, os = 'windows') {
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
-async function runSession(profileId, proxy, url, effectiveOs) {
+async function runSession(profileId, proxy, url, effectiveOs, reused = false) {
   let browser = null;
   let cleanedUp = false;
 
@@ -948,9 +952,14 @@ async function runSession(profileId, proxy, url, effectiveOs) {
     if (cleanedUp) return;
     cleanedUp = true;
     await stopProfile(profileId);
-    await deleteProfile(profileId);
+    // CRITICAL: Only delete the profile if it was one we created (reused = false)
+    if (!reused) {
+      await deleteProfile(profileId);
+      logger.info(`[${profileId}] Cleanup done — temporary profile deleted.`);
+    } else {
+      logger.info(`[${profileId}] Cleanup done — kept existing/manual profile.`);
+    }
     await markProxyUsed(proxy);
-    logger.info(`[${profileId}] Cleanup done — proxy removed from AdsPower and marked used.`);
   };
 
   try {
@@ -982,6 +991,37 @@ async function runSession(profileId, proxy, url, effectiveOs) {
         logger.debug(`[${profileId}] Could not minimize window: ${e.message}`);
       }
     }
+
+    // ── Pre-flight Check: Initial TTL (Windows only) ───────────────────────────
+    if (effectiveOs === 'windows') {
+      logger.info(`[${profileId}] Verifying Initial TTL on browserleaks.com/tcp...`);
+      try {
+        await page.goto('https://browserleaks.com/tcp', { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+        // Brief sleep to ensure detection results are rendered
+        await sleep(3000);
+
+        const ttlValue = await page.evaluate(() => {
+          const cells = Array.from(document.querySelectorAll('td'));
+          const ttlLabel = cells.find(c => c.textContent.trim().startsWith('Initial TTL'));
+          return ttlLabel ? ttlLabel.nextElementSibling.textContent.trim() : null;
+        });
+
+        if (!ttlValue) {
+          logger.warn(`[${profileId}] Initial TTL element not found on BrowserLeaks. Skipping check.`);
+        } else if (ttlValue !== '128') {
+          const errMsg = `Initial TTL mismatch: found ${ttlValue}, expected 128. Proxy or Browser Fingerprint potentially inconsistent.`;
+          logger.error(`[${profileId}] \u2717 ${errMsg}`);
+          throw new Error(errMsg);
+        } else {
+          logger.info(`[${profileId}] \u2713 Initial TTL is 128. Profile matches Windows expectations.`);
+        }
+      } catch (err) {
+        if (err.message.includes('Initial TTL mismatch')) throw err;
+        logger.warn(`[${profileId}] Could not perform Initial TTL check (${err.message}). Proceeding anyway.`);
+      }
+    }
+
 
     // ── Step 1: Navigate (with generous timeout for redirect strategy) ──────────
     // Redirect strategy does: intermediate site (30s) + sleep (3.5s) + target (60s) = ~93.5s max.
@@ -1015,7 +1055,7 @@ async function runSession(profileId, proxy, url, effectiveOs) {
     }
 
     // ── Step 3: START the browse timer now that we are on the target site ───────
-    const finalUrl = page.url();
+    let finalUrl = page.url();
     logger.info(`[${profileId}] ✓ Starting browse session on: ${finalUrl}`);
 
     const cfg = (global._effectiveCfg) || config; // use settings loaded in main() if available
@@ -1037,8 +1077,14 @@ async function runSession(profileId, proxy, url, effectiveOs) {
       ));
     }
 
-    // ── Step 4: Record success log ──────────────────────────────────────────────
-    await logSessionSuccess(profileId, finalUrl, Math.round(durationMs / 1000), proxy);
+    // ── Step 4: Record session log ──────────────────────────────────────────────
+    // Use the original 'url' (from the user's list) for reporting, 
+    // but check if we ended up on an error page to mark the status correctly.
+    finalUrl = page.url(); // Already declared earlier
+    const isErrorPage = finalUrl.includes('chrome-error://') || finalUrl === 'about:blank';
+    const finalStatus = isErrorPage ? 'error' : 'success';
+
+    await logSessionSuccess(profileId, url, Math.round(durationMs / 1000), proxy, finalStatus);
 
     await browser.disconnect().catch(() => { });
   } finally {
@@ -1106,54 +1152,61 @@ async function runBatch(freshPool, websites, cfg) {
     return 'no-proxies';
   }
 
-  // ── 1. Pick target = random number in the Browser Concurrency range ───────
-  //    This is exactly what the user configured: how many browsers to run per batch.
-  const concMin = cfg.concurrency?.min ?? 3;
-  const concMax = cfg.concurrency?.max ?? 5;
-  const targetLive = randomInt(
-    Math.min(concMin, freshPool.length),
-    Math.min(concMax, freshPool.length)
-  );
-  logger.info(`\nTarget: ${targetLive} live proxies (concurrency min=${concMin} max=${concMax}, pool=${freshPool.length}).`);
+  // ── 1. Determine targets per OS category based on settings ───────────────
+  const sampling = cfg.proxySampling || { windows: { min: 3, max: 5 }, mac: { min: 0, max: 0 }, android: { min: 0, max: 0 }, ios: { min: 0, max: 0 } };
 
-  // ── 2. Shuffle the fresh pool and test one-by-one until quota met ────────
-  //    We shuffle a COPY so the caller's freshPool array is not mutated.
-  const shuffled = [...freshPool];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = randomInt(0, i);
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
+  // Helper to get random target in range [min, max]
+  const getTarget = (s) => randomInt(s.min, s.max);
 
+  const targets = {
+    windows: getTarget(sampling.windows || { min: 0, max: 0 }),
+    mac: getTarget(sampling.mac || { min: 0, max: 0 }),
+    android: getTarget(sampling.android || { min: 0, max: 0 }),
+    ios: getTarget(sampling.ios || { min: 0, max: 0 }),
+  };
+
+  const targetLive = targets.windows + targets.mac + targets.android + targets.ios;
+
+  logger.info(`Batch Targets: Windows: ${targets.windows}, Mac: ${targets.mac}, Android: ${targets.android}, iOS: ${targets.ios} (Total: ${targetLive})`);
+
+  // ── 2. Draw proxies for each category ──────────────────────────────────────
   const liveProxies = [];
-  const testedProxies = []; // track all tested (live + dead) so we can remove from freshPool
+  const testedProxies = [];
 
-  logger.info(`Testing proxies one-by-one until ${targetLive} live found…\n`);
+  const processCategory = async (osType, count) => {
+    if (count <= 0) return;
 
-  for (const proxy of shuffled) {
-    if (shutdownRequested) break;
-    if (pauseRequested) await waitWhilePaused();
-    if (shutdownRequested) break;
-    if (liveProxies.length >= targetLive) break;
+    // Use the modular sampling function to get a batch of candidates
+    // Note: We take a larger sample (2x) to account for dead proxies if available
+    const candidates = sampleProxiesForOS(freshPool, osType, count * 2 || 20);
 
-    testedProxies.push(proxy);
-    const ok = await testProxy(proxy);
-    const effectiveOs = getEffectiveOS(proxy);
+    let found = 0;
+    for (const proxy of candidates) {
+      if (shutdownRequested || found >= count) break;
+      if (pauseRequested) await waitWhilePaused();
 
-    if (ok) {
-      logger.info(`  ✓ LIVE   ${proxy.protocol}://${proxy.host}:${proxy.port} [${effectiveOs}]  (${liveProxies.length + 1}/${targetLive})`);
-      liveProxies.push(proxy);
-    } else {
-      logger.warn(`  \u2717 DEAD   ${proxy.protocol}://${proxy.host}:${proxy.port} [${effectiveOs}] \u2014 skipping for this session`);
-
-      await removeProxyFromSource(proxy);
-      // Remove dead proxy from the caller's copy of freshPool
-      const idx = freshPool.findIndex(p => proxyKey(p) === proxyKey(proxy));
-      if (idx !== -1) freshPool.splice(idx, 1);
+      testedProxies.push(proxy);
+      const ok = await testProxy(proxy);
+      if (ok) {
+        found++;
+        liveProxies.push({ ...proxy, os: osType });
+        logger.info(`  ✓ LIVE   ${proxy.protocol}://${proxy.host}:${proxy.port} [${osType}] (${found}/${count})`);
+      } else {
+        logger.warn(`  \u2717 DEAD   ${proxy.protocol}://${proxy.host}:${proxy.port} [${osType}] \u2014 skipping`);
+        await removeProxyFromSource(proxy);
+        const idx = freshPool.findIndex(p => proxyKey(p) === proxyKey(proxy));
+        if (idx !== -1) freshPool.splice(idx, 1);
+      }
+      await sleep(300);
     }
-    await sleep(300);
-  }
+  };
 
-  logger.info(`\nProxy test complete: ${liveProxies.length} live found (tested ${testedProxies.length}).`);
+  await processCategory('windows', targets.windows);
+  await processCategory('mac', targets.mac);
+  await processCategory('android', targets.android);
+  await processCategory('ios', targets.ios);
+
+  logger.info(`\nProxy test complete: ${liveProxies.length} total live found (target: ${targetLive}).`);
 
   if (!liveProxies.length) {
     logger.error('No live proxies found in this batch. Check proxy credentials.');
@@ -1179,25 +1232,37 @@ async function runBatch(freshPool, websites, cfg) {
     logger.warn(`Capped: creating ${toCreate.length} of ${liveProxies.length} live proxies (plan limit).`);
   }
 
-  // ── 4. Create profiles sequentially ────────────────────────────────────
-  logger.info(`\nCreating ${toCreate.length} profile(s)…`);
+  // ── 4. Create or Resolve profiles sequentially ─────────────────────────
+  logger.info(`\nProcessing ${toCreate.length} profile(s)...`);
+
+  // Optimization: Fetch first 100 profiles to see if any match our proxies to avoid duplicates
+  const existingList = await apiCall(() => api.get('/api/v1/user/list', { params: { page_size: 100 } }), 'Check existing').then(r => r.data?.data?.list || []);
+
   const profileMap = [];
   for (let i = 0; i < toCreate.length; i++) {
     if (shutdownRequested) { logger.warn('Shutdown requested — stopping profile creation early.'); break; }
     const proxy = toCreate[i];
-
-    // Detect OS first so we can name it correctly in AdsPower
     const effectiveOs = getEffectiveOS(proxy);
-    const name = `auto_${effectiveOs}_${Date.now()}_${i}`;
 
-    try {
-      const result = await createProfile(proxy, name, effectiveOs);
-      profileMap.push({ profileId: result.profileId, effectiveOs: result.effectiveOs, proxy });
-    } catch (err) {
-      logger.warn(`Profile create failed (${effectiveOs}): ${err.message}`);
+    // DEDUPLICATION: Check if a profile with this proxy host:port already exists
+    const existing = existingList.find(p =>
+      p.user_proxy_config?.proxy_host === proxy.host &&
+      String(p.user_proxy_config?.proxy_port) === String(proxy.port)
+    );
+
+    if (existing) {
+      logger.info(`[REUSE] Found existing profile [${existing.user_id}] for proxy ${proxy.host}:${proxy.port}.`);
+      profileMap.push({ profileId: existing.user_id, effectiveOs, proxy, reused: true });
+    } else {
+      const name = `Profile-${proxy.host.slice(-6)}-${proxy.port}-${Math.floor(Math.random() * 999)}`;
+      try {
+        const result = await createProfile(proxy, name, effectiveOs);
+        profileMap.push({ profileId: result.profileId, effectiveOs: result.effectiveOs, proxy, reused: false });
+      } catch (err) {
+        logger.warn(`Profile creation failed for ${proxy.host}: ${err.message}`);
+      }
+      await sleep(randomInt(1500, 2000));
     }
-
-    await sleep(randomInt(1500, 2000));
   }
   if (!profileMap.length) { logger.error('No profiles created. Aborting batch.'); return 'no-profiles'; }
 
@@ -1208,18 +1273,19 @@ async function runBatch(freshPool, websites, cfg) {
   logger.info(`\n${profileMap.length} profile(s) ready. Running ${concurrency} browser(s) at a time.`);
 
   // ── 5. Run sessions ─────────────────────────────────────────────────────
-  const tasks = profileMap.map(({ profileId, effectiveOs, proxy }) => async () => {
+  const tasks = profileMap.map(({ profileId, effectiveOs, proxy, reused }) => async () => {
     const rawUrl = websites[randomInt(0, websites.length - 1)];
-    const url = normalizeUrl(rawUrl);  // ensure https:// prefix
-    if (url !== rawUrl) logger.info(`URL normalized: "${rawUrl}" → "${url}"`);
+    const url = normalizeUrl(rawUrl);
     try {
-      await runSession(profileId, proxy, url, effectiveOs);
+      await runSession(profileId, proxy, url, effectiveOs, reused);
     } catch (err) {
       logger.warn(`Session [${profileId}] failed: ${err.message}`);
-      try { await deleteProfile(profileId); } catch (_) { }
+      // Only delete if we were the ones who created it
+      if (!reused) {
+        try { await deleteProfile(profileId); } catch (_) { }
+      }
       markProxyUsed(proxy);
     }
-    // Remove this proxy from freshPool after it is used
     const idx = freshPool.findIndex(p => proxyKey(p) === proxyKey(proxy));
     if (idx !== -1) freshPool.splice(idx, 1);
   });

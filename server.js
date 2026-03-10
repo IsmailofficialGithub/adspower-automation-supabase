@@ -212,33 +212,52 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api', requireAuth);
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
-const KNOWN_OS = new Set(['windows', 'mac', 'android', 'linux']);
+const KNOWN_OS = new Set(['windows', 'mac', 'android', 'linux', 'ios', 'iphone']);
 
-function parseProxyUrl(str) {
-    const m = str.trim().match(/^(socks5|socks4|https?):\/\/(.+)$/i);
+function parseProxyUrl(str, defaultOs = 'windows') {
+    let raw = str.trim();
+    if (!/^[a-z0-9]+:\/\//i.test(raw)) {
+        raw = 'socks5://' + raw; // Default to socks5 if no protocol
+    }
+    const m = raw.match(/^(socks5|socks4|https?):\/\/(.+)$/i);
     if (!m) return null;
     const parts = m[2].split(':');
-    if (parts.length < 4) return null;
     const host = parts[0];
     const port = parseInt(parts[1], 10);
-    const user = parts[2];
-    const last = parts[parts.length - 1].toLowerCase();
-    let os, pass;
-    if (KNOWN_OS.has(last)) {
-        os = last;
-        pass = parts.slice(3, -1).join(':');
+    let user = parts[2] || '';
+    let pass = '';
+    const last = parts[parts.length - 1]?.toLowerCase() || '';
+    let os;
+
+    if (parts.length >= 4) {
+        if (KNOWN_OS.has(last)) {
+            os = last;
+            pass = parts.slice(3, -1).join(':');
+        } else {
+            os = defaultOs;
+            pass = parts.slice(3).join(':');
+        }
     } else {
-        os = 'windows';
-        pass = parts.slice(3).join(':');
+        os = defaultOs;
+        if (parts.length === 2) {
+            user = ''; pass = '';
+        } else if (parts.length === 3) {
+            user = parts[2]; pass = '';
+        }
     }
-    if (!host || isNaN(port) || !user || !pass) return null;
+    if (!host || isNaN(port)) return null;
     return { host, port, user, pass, protocol: m[1].toLowerCase(), os };
 }
 
-function normalizeProxy(entry) {
-    if (typeof entry === 'string') return parseProxyUrl(entry);
+function normalizeProxy(entry, defaultOs = 'windows') {
+    if (typeof entry === 'string') return parseProxyUrl(entry, defaultOs);
     if (entry && typeof entry === 'object') return entry;
     return null;
+}
+
+function proxyKey(p) {
+    if (!p) return '';
+    return `${(p.protocol || 'socks5').toLowerCase()}://${(p.host || '').toLowerCase()}:${p.port}:${(p.user || '').toLowerCase()}:${(p.pass || '').toLowerCase()}`;
 }
 
 // ─── Settings Defaults ───────────────────────────────────────────────────────
@@ -269,15 +288,23 @@ const DEFAULT_SETTINGS = {
     },
 };
 
-function proxyKey(p) {
-    return `${p.host}:${p.port}:${p.pass || ''}`;
-}
+// (Moved proxyKey up)
 
 async function removeProxyFromAdsPower(userId, proxyHost, db) {
     try {
-        const { data: sRes } = await db.from('ads_settings').select('data').eq('user_id', userId).single();
-        const settings = deepMerge(DEFAULT_SETTINGS, sRes?.data || {});
-        const { baseUrl, apiKey } = settings.adsPower;
+        let baseUrl = 'http://127.0.0.1:50325';
+        let apiKey = '';
+
+        if (IS_LOCAL_MODE) {
+            const settings = loadJsonFile(DEFAULT_PATHS.settings);
+            baseUrl = settings.adsPower?.baseUrl || baseUrl;
+            apiKey = settings.adsPower?.apiKey || apiKey;
+        } else {
+            const { data: sRes } = await db.from('ads_settings').select('data').eq('user_id', userId).single();
+            const settings = deepMerge(DEFAULT_SETTINGS, sRes?.data || {});
+            baseUrl = settings.adsPower?.baseUrl || baseUrl;
+            apiKey = settings.adsPower?.apiKey || apiKey;
+        }
 
         if (!baseUrl) return;
 
@@ -287,7 +314,6 @@ async function removeProxyFromAdsPower(userId, proxyHost, db) {
             headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
         });
 
-        // Scan for profiles using this proxy host
         const res = await api.get('/api/v1/user/list', { params: { page_size: 100 } }).catch(() => null);
         const list = res?.data?.list || res?.data?.data?.list;
         if (!list) return;
@@ -303,6 +329,111 @@ async function removeProxyFromAdsPower(userId, proxyHost, db) {
     } catch (err) {
         console.warn(`[AdsPower] Cleanup skip for ${proxyHost}: ${err.message}`);
     }
+}
+
+function buildFingerprintConfig(proxy, fp, effectiveOs) {
+    const osMap = { windows: 0, mac: 1, ios: 2, iphone: 2, android: 3 };
+    const osPlatform = osMap[effectiveOs] ?? 0;
+
+    let resolution = '1366x768';
+    if (fp?.screenResolution === 'random') {
+        const resolutions = ['1366x768', '1920x1080', '1440x900', '1280x800', '1600x900', '1280x1024', '1024x768', '2560x1440'];
+        resolution = resolutions[Math.floor(Math.random() * resolutions.length)];
+    } else if (fp?.screenResolution === 'custom' && fp?.customResolution) {
+        resolution = fp.customResolution;
+    }
+
+    let language = ['en-US', 'en'];
+    if (fp?.language === 'custom' && fp?.customLanguage) {
+        language = fp.customLanguage.split(',').map(l => l.trim()).filter(Boolean);
+    }
+
+    let automaticTimezone = '1';
+    let timezone = '';
+    if (fp?.timezone === 'real') {
+        automaticTimezone = '0';
+        timezone = 'UTC'; // Placeholder or system TZ
+    } else if (fp?.timezone === 'custom' && fp?.customTimezone) {
+        automaticTimezone = '0';
+        timezone = fp.customTimezone;
+    }
+
+    const webrtcMap = { forward: 'forward', replace: 'proxy', real: 'local', disabled: 'disabled', proxy: 'proxy', local: 'local', disable_udp: 'disable_udp' };
+    const webrtcMode = webrtcMap[fp?.webrtc || 'proxy'] ?? 'proxy';
+
+    const fingerprintResult = {
+        automatic_timezone: automaticTimezone,
+        timezone,
+        language,
+        ua: fp?.userAgent || '',
+        resolution,
+        fonts: (fp?.fonts === 'custom' && Array.isArray(fp?.customFonts)) ? fp.customFonts : [],
+        platform: osPlatform,
+        webrtc: webrtcMode,
+        canvas: fp?.canvasNoise === false ? 0 : 1,
+        webgl: fp?.webglNoise === false ? 0 : 1,
+        audio: fp?.audioNoise === false ? 0 : 1,
+        media_devices: fp?.mediaDevicesNoise === false ? 0 : 1,
+        client_rects: fp?.clientRectsNoise === false ? 0 : 1,
+        speech_voices: fp?.speechVoicesNoise === false ? 0 : 1,
+        webgl_config: {
+            vendor: fp?.webglVendor || 'Google Inc. (Intel)',
+            renderer: fp?.webglRenderer || 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+            webgl_type: fp?.webglMetadata === 'real' ? 1 : 0,
+        }
+    };
+
+    if (fp?.location === 'custom' && fp?.customLatitude && fp?.customLongitude) {
+        fingerprintResult.location = 1;
+        fingerprintResult.latitude = parseFloat(fp.customLatitude);
+        fingerprintResult.longitude = parseFloat(fp.customLongitude);
+        fingerprintResult.accuracy = fp.customAccuracy ? parseFloat(fp.customAccuracy) : 100;
+    }
+
+    // Force AdsPower to generate a User-Agent for the correct OS if no custom UA is provided.
+    // AdsPower expects random_ua as an object within the JSON payload.
+    if (fp?.randomFingerprint || !fp?.userAgent) {
+        const browserOs = effectiveOs === 'mac' ? 'mac' : (effectiveOs === 'android' ? 'android' : (effectiveOs === 'ios' || effectiveOs === 'iphone' ? 'ios' : 'win'));
+        fingerprintResult.random_ua = { ua_browser: ['chrome'], ua_os: [browserOs] };
+    }
+
+    return fingerprintResult;
+}
+
+async function createAdsPowerProfile(userId, proxy, settings, db) {
+    const { baseUrl, apiKey } = settings.adsPower;
+    if (!baseUrl) throw new Error('AdsPower Base URL not set');
+
+    const api = axios.create({
+        baseURL: baseUrl,
+        timeout: 25000,
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
+    });
+
+    const fp = settings.fingerprint || {};
+    const effectiveOs = proxy.os || 'windows';
+    const fingerprintConfig = buildFingerprintConfig(proxy, fp, effectiveOs);
+
+    const name = `Profile-${proxy.host.slice(-6)}-${Math.floor(Math.random() * 999)}`;
+    const body = {
+        name,
+        group_id: settings.groupId || '0',
+        open_urls: Array.isArray(settings.openUrls) ? settings.openUrls : [],
+        cookie: settings.cookie || '',
+        user_proxy_config: {
+            proxy_soft: 'other',
+            proxy_type: proxy.protocol || 'socks5',
+            proxy_host: proxy.host,
+            proxy_port: String(proxy.port),
+            proxy_user: proxy.user || '',
+            proxy_password: proxy.pass || '',
+        },
+        fingerprint_config: fingerprintConfig,
+    };
+
+    const res = await api.post('/api/v1/user/create', body);
+    if (res.data.code !== 0) throw new Error(res.data.msg);
+    return res.data.data;
 }
 
 function deepMerge(target, source) {
@@ -524,15 +655,28 @@ app.get('/api/stats', async (req, res) => {
     const [
         { count: totalProxies },
         { count: usedCount },
-        { count: websites }
+        { count: websites },
+        sRes
     ] = await Promise.all([
         db.from('ads_proxies').select('*', { count: 'exact', head: true }),
         db.from('ads_used_proxies').select('*', { count: 'exact', head: true }),
         db.from('ads_website').select('*', { count: 'exact', head: true }),
+        db.from('ads_settings').select('data').eq('user_id', userId).single()
     ]);
 
-    const { data: proxies } = await db.from('ads_proxies').select('host,port,pass');
-    const { data: used } = await db.from('ads_used_proxies').select('host,port,pass');
+    const settings = deepMerge(DEFAULT_SETTINGS, sRes?.data || {});
+    const { baseUrl, apiKey } = settings.adsPower;
+    let activeProfiles = 0;
+    if (baseUrl) {
+        try {
+            const api = axios.create({ baseURL: baseUrl, timeout: 5000, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
+            const resp = await api.get('/api/v1/user/list', { params: { page_size: 1 } });
+            activeProfiles = resp?.data?.data?.page_info?.total_count || 0;
+        } catch (_) { }
+    }
+
+    const { data: proxies } = await db.from('ads_proxies').select('*');
+    const { data: used } = await db.from('ads_used_proxies').select('*');
     const usedKeys = new Set((used || []).map(p => proxyKey(p)));
     const freshProxies = (proxies || []).filter(p => !usedKeys.has(proxyKey(p))).length;
 
@@ -541,8 +685,164 @@ app.get('/api/stats', async (req, res) => {
         usedProxies: usedCount || 0,
         freshProxies,
         websites: websites || 0,
+        activeProfiles,
         running: userAutomations.has(userId)
     });
+});
+
+// ─── Profiles ─────────────────────────────────────────────────────────────────
+app.get('/api/profiles/list', async (req, res) => {
+    const userId = req.user.id;
+    const db = req.supabase;
+    let settings;
+    if (IS_LOCAL_MODE) {
+        settings = deepMerge(DEFAULT_SETTINGS, loadJsonFile(DEFAULT_PATHS.settings));
+    } else {
+        const { data } = await db.from('ads_settings').select('data').eq('user_id', userId).single();
+        settings = deepMerge(DEFAULT_SETTINGS, data?.data || {});
+    }
+
+    const { baseUrl, apiKey } = settings.adsPower;
+    if (!baseUrl) return res.json({ list: [] });
+
+    try {
+        const api = axios.create({ baseURL: baseUrl, timeout: 25000, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
+        const resp = await api.get('/api/v1/user/list', { params: { page_size: 100 } });
+        res.json({ list: resp?.data?.data?.list || resp?.data?.list || [] });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/profiles/create', async (req, res) => {
+    const userId = req.user.id;
+    const db = req.supabase;
+    const { source, proxies: reqProxies, defaultOs = 'windows' } = req.body;
+
+    let settings;
+    if (IS_LOCAL_MODE) {
+        settings = deepMerge(DEFAULT_SETTINGS, loadJsonFile(DEFAULT_PATHS.settings));
+    } else {
+        const { data: s } = await db.from('ads_settings').select('data').eq('user_id', userId).single();
+        settings = deepMerge(DEFAULT_SETTINGS, s?.data || {});
+    }
+
+    let targets = [];
+    if (source === 'new' && Array.isArray(reqProxies)) {
+        // Parse raw bulk strings and force the user's selected defaultOs
+        targets = reqProxies.map(p => {
+            const normalized = normalizeProxy(p, defaultOs);
+            if (normalized) normalized.os = defaultOs; // Force override
+            return normalized;
+        }).filter(Boolean);
+
+        // Add to database if new
+        if (IS_LOCAL_MODE) {
+            const pool = loadJsonFile(DEFAULT_PATHS.proxies);
+            targets.forEach(t => { if (!pool.find(p => proxyKey(p) === proxyKey(t))) pool.push(t); });
+            saveJsonFile(DEFAULT_PATHS.proxies, pool);
+        } else {
+            const toInsert = targets.map(t => ({ user_id: userId, ...t }));
+            const { data: existing } = await db.from('ads_proxies').select('*');
+            const exKeys = new Set((existing || []).map(p => proxyKey(p)));
+            const uniqueToInsert = toInsert.filter(t => !exKeys.has(proxyKey(t)));
+            if (uniqueToInsert.length > 0) {
+                await db.from('ads_proxies').insert(uniqueToInsert);
+            }
+        }
+    } else if (source === 'existing' && Array.isArray(reqProxies)) {
+        // Force the user's selected defaultOs even on existing proxies
+        targets = reqProxies.map(p => ({ ...p, os: defaultOs }));
+    } else {
+        return res.status(400).json({ error: 'Invalid source or proxies' });
+    }
+
+    if (!targets.length) return res.json({ error: 'Selected proxies could not be parsed. Ensure they follow the format: host:port:user:pass' });
+
+    res.json({ message: `Creating ${targets.length} profile(s)...` });
+
+    (async () => {
+        // Fetch existing profiles to avoid duplicates (first 200)
+        let existingProfiles = [];
+        try {
+            const { baseUrl, apiKey } = settings.adsPower;
+            const api = axios.create({ baseURL: baseUrl, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
+            const listRes = await api.get('/api/v1/user/list', { params: { page_size: 100 } });
+            existingProfiles = listRes?.data?.data?.list || [];
+        } catch (err) {
+            console.error('Pre-creation profile check failed:', err.message);
+        }
+
+        for (const p of targets) {
+            try {
+                const found = existingProfiles.find(ep =>
+                    ep.user_proxy_config?.proxy_host === p.host &&
+                    String(ep.user_proxy_config?.proxy_port) === String(p.port)
+                );
+
+                if (found) {
+                    console.log(`Skipping duplicate profile creation for ${p.host}:${p.port} (ID: ${found.user_id})`);
+                } else {
+                    await createAdsPowerProfile(userId, p, settings, db);
+                }
+
+                // Mark as used either way so they appear in the dashboard correctly
+                if (IS_LOCAL_MODE) {
+                    const uPool = loadJsonFile(DEFAULT_PATHS.usedProxies);
+                    if (!uPool.find(up => proxyKey(up) === proxyKey(p))) {
+                        uPool.push({ ...p, usedAt: new Date().toISOString() });
+                        saveJsonFile(DEFAULT_PATHS.usedProxies, uPool);
+                    }
+                } else {
+                    await db.from('ads_used_proxies').insert({
+                        user_id: userId, host: p.host, port: p.port, user: p.user, pass: p.pass,
+                        protocol: p.protocol, os: p.os
+                    });
+                }
+                await new Promise(resolve => setTimeout(resolve, 2400));
+            } catch (err) {
+                console.error(`Failed to create profile for ${p.host}: ${err.message}`);
+            }
+        }
+    })();
+});
+
+app.post('/api/profiles/cleanup', async (req, res) => {
+    const userId = req.user.id;
+    const db = req.supabase;
+    let proxies;
+    if (IS_LOCAL_MODE) {
+        proxies = loadJsonFile(DEFAULT_PATHS.proxies);
+    } else {
+        const { data } = await db.from('ads_proxies').select('host');
+        proxies = data;
+    }
+
+    const hosts = [...new Set((proxies || []).map(p => p.host))];
+    hosts.forEach(h => removeProxyFromAdsPower(userId, h, db));
+
+    res.json({ message: 'Cleanup started' });
+});
+
+app.delete('/api/profiles/:id', async (req, res) => {
+    const userId = req.user.id;
+    const profileId = req.params.id;
+    const db = req.supabase;
+    let settings;
+    if (IS_LOCAL_MODE) {
+        settings = deepMerge(DEFAULT_SETTINGS, loadJsonFile(DEFAULT_PATHS.settings));
+    } else {
+        const { data } = await db.from('ads_settings').select('data').eq('user_id', userId).single();
+        settings = deepMerge(DEFAULT_SETTINGS, data?.data || {});
+    }
+    const { baseUrl, apiKey } = settings.adsPower;
+    try {
+        const api = axios.create({ baseURL: baseUrl, timeout: 25000, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
+        await api.post('/api/v1/user/delete', { user_ids: [profileId] });
+        res.json({ deleted: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // ─── Logs (Success History) ───────────────────────────────────────────────────
@@ -563,6 +863,10 @@ app.get('/api/success-logs', async (req, res) => {
 });
 
 app.post('/api/success-logs/clear', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        saveJsonFile(DEFAULT_PATHS.logs, []);
+        return res.json({ ok: true });
+    }
     const db = req.supabase;
     const userId = req.user.id;
     const { error } = await db.from('ads_logs').delete().eq('user_id', userId);
@@ -578,21 +882,26 @@ app.get('/api/proxies', async (req, res) => {
         const usedKeys = new Set((used || []).map(p => proxyKey(p)));
         return res.json(proxies.map(p => {
             const parsed = normalizeProxy(p);
-            return { ...parsed, used: usedKeys.has(proxyKey(parsed)), key: proxyKey(parsed) };
+            // Return parsed info for the table, but the key must match what the list expects
+            return {
+                ...parsed,
+                used: usedKeys.has(proxyKey(parsed)),
+                key: proxyKey(parsed)
+            };
         }));
     }
     const db = req.supabase;
     const { data: proxies, error } = await db.from('ads_proxies').select('*').order('created_at');
     if (error) return res.status(500).json({ error: error.message });
 
-    const { data: used } = await db.from('ads_used_proxies').select('host,port,pass');
+    const { data: used } = await db.from('ads_used_proxies').select('*');
     const usedKeys = new Set((used || []).map(p => proxyKey(p)));
 
     res.json((proxies || []).map(p => ({ ...p, used: usedKeys.has(proxyKey(p)), key: proxyKey(p) })));
 });
 
 app.post('/api/proxies/add', async (req, res) => {
-    const { entries } = req.body;
+    const { entries, defaultOs = 'windows' } = req.body;
     if (!Array.isArray(entries) || entries.length === 0)
         return res.status(400).json({ error: 'entries array required' });
 
@@ -601,7 +910,7 @@ app.post('/api/proxies/add', async (req, res) => {
         const existingKeys = new Set(pool.map(p => proxyKey(normalizeProxy(p))));
         let addedCount = 0;
         for (const e of entries) {
-            const p = normalizeProxy(e);
+            const p = normalizeProxy(e, defaultOs);
             if (!p || existingKeys.has(proxyKey(p))) continue;
             pool.push(p);
             existingKeys.add(proxyKey(p));
@@ -614,12 +923,12 @@ app.post('/api/proxies/add', async (req, res) => {
     const db = req.supabase;
     const userId = req.user.id;
     // ... rest of the supabase logic ...
-    const { data: existing } = await db.from('ads_proxies').select('host,port,pass');
+    const { data: existing } = await db.from('ads_proxies').select('*');
     const existingKeys = new Set((existing || []).map(p => proxyKey(p)));
 
     const toInsert = [];
     for (const e of entries) {
-        const p = normalizeProxy(e);
+        const p = normalizeProxy(e, defaultOs);
         if (!p) continue;
         if (existingKeys.has(proxyKey(p))) continue;
         existingKeys.add(proxyKey(p));
@@ -636,50 +945,112 @@ app.post('/api/proxies/add', async (req, res) => {
 
 app.delete('/api/proxies', async (req, res) => {
     const { keys } = req.body;
-    const db = req.supabase;
     const userId = req.user.id;
 
+    if (IS_LOCAL_MODE) {
+        let pool = loadJsonFile(DEFAULT_PATHS.proxies);
+        let matches = [];
+        console.log(`[local] Deleting proxies. Pool size: ${pool.length}, Requested keys: ${JSON.stringify(keys)}`);
+
+        if (Array.isArray(keys) && keys.length) {
+            matches = pool.filter(p => {
+                const pKey = proxyKey(normalizeProxy(p));
+                const match = keys.includes(pKey);
+                if (match) console.log(`[local] Match found for deletion: ${pKey}`);
+                return match;
+            });
+            pool = pool.filter(p => !keys.includes(proxyKey(normalizeProxy(p))));
+            console.log(`[local] Deletion complete. Matches found: ${matches.length}, New pool size: ${pool.length}`);
+        } else {
+            matches = [...pool];
+            pool = [];
+            console.log(`[local] Deleting ALL proxies for this user.`);
+        }
+        saveJsonFile(DEFAULT_PATHS.proxies, pool);
+
+        // Background AdsPower cleanup
+        const hosts = [...new Set(matches.map(p => {
+            const parsed = normalizeProxy(p);
+            return parsed ? parsed.host : null;
+        }).filter(Boolean))];
+        hosts.forEach(h => removeProxyFromAdsPower(userId, h, null));
+
+        return res.json({ deleted: true });
+    }
+
+    const db = req.supabase;
     if (Array.isArray(keys) && keys.length) {
         // 1. Get hostnames before deleting to clean up AdsPower later
-        const { data: all } = await db.from('ads_proxies').select('id,host,port,pass');
+        console.log(`[proxy:delete] Attempting to delete ${keys.length} proxies for user ${userId}`);
+        const { data: all, error: fetchErr } = await db.from('ads_proxies').select('*');
+        if (fetchErr) {
+            console.error('[proxy:delete] Fetch error:', fetchErr.message);
+            return res.status(500).json({ error: fetchErr.message });
+        }
+
         const matches = (all || []).filter(p => keys.includes(proxyKey(p)));
         const ids = matches.map(p => p.id);
         const hosts = [...new Set(matches.map(p => p.host))];
 
+        console.log(`[proxy:delete] Found ${ids.length} matching IDs in DB out of ${keys.length} requested keys`);
+
         if (ids.length) {
             // 2. Delete from Supabase
-            await db.from('ads_proxies').delete().in('id', ids);
+            const { error: delErr } = await db.from('ads_proxies').delete().in('id', ids);
+            if (delErr) {
+                console.error('[proxy:delete] Delete error:', delErr.message);
+                return res.status(500).json({ error: delErr.message });
+            }
             // 3. Trigger AdsPower cleanup in background
             hosts.forEach(h => removeProxyFromAdsPower(userId, h, db));
+            return res.json({ deleted: true, count: ids.length });
+        } else {
+            console.warn('[proxy:delete] No matches found for keys:', keys);
+            return res.status(404).json({ error: 'No matching proxies found in database' });
         }
     } else {
         // Delete all proxies for this user
+        console.log(`[proxy:delete] Deleting ALL proxies for user ${userId}`);
         const { data: all } = await db.from('ads_proxies').select('host');
         const hosts = [...new Set((all || []).map(p => p.host))];
 
-        await db.from('ads_proxies').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        const { error: delErr } = await db.from('ads_proxies').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        if (delErr) {
+            console.error('[proxy:delete] Delete all error:', delErr.message);
+            return res.status(500).json({ error: delErr.message });
+        }
 
         // Background cleanup
         hosts.forEach(h => removeProxyFromAdsPower(userId, h, db));
+        res.json({ deleted: true, all: true });
     }
-
-    res.json({ deleted: true });
 });
 
 // ─── Used proxies ─────────────────────────────────────────────────────────────
 app.get('/api/used-proxies', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        return res.json(loadJsonFile(DEFAULT_PATHS.usedProxies));
+    }
     const { data, error } = await req.supabase.from('ads_used_proxies').select('*').order('used_at');
     if (error) return res.status(500).json({ error: error.message });
     res.json(data || []);
 });
 
 app.delete('/api/used-proxies', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        saveJsonFile(DEFAULT_PATHS.usedProxies, []);
+        return res.json({ cleared: true });
+    }
     await req.supabase.from('ads_used_proxies').delete().neq('id', '00000000-0000-0000-0000-000000000000');
     res.json({ cleared: true });
 });
 
 // ─── Websites ─────────────────────────────────────────────────────────────────
 app.get('/api/websites', async (req, res) => {
+    if (IS_LOCAL_MODE) {
+        const list = loadJsonFile(DEFAULT_PATHS.websites);
+        return res.json(list.map(w => typeof w === 'string' ? normalizeUrl(w) : normalizeUrl(w.url)));
+    }
     const { data, error } = await req.supabase.from('ads_website').select('id,url').order('created_at');
     if (error) return res.status(500).json({ error: error.message });
     // Normalize on read too — fixes any bare URLs saved before this patch
@@ -704,6 +1075,17 @@ app.post('/api/websites/add', async (req, res) => {
 
     const normalized = normalizeUrl(url);
 
+    if (IS_LOCAL_MODE) {
+        const pool = loadJsonFile(DEFAULT_PATHS.websites);
+        // Supports both array of strings and array of objects
+        const exists = pool.some(w => (typeof w === 'string' ? w : w.url) === normalized);
+        if (!exists) {
+            pool.push(normalized);
+            saveJsonFile(DEFAULT_PATHS.websites, pool);
+        }
+        return res.json({ added: true, url: normalized });
+    }
+
     const { error } = await req.supabase
         .from('ads_website')
         .upsert({ user_id: req.user.id, url: normalized }, { onConflict: 'user_id,url' });
@@ -715,6 +1097,17 @@ app.post('/api/websites/add', async (req, res) => {
 app.delete('/api/websites/:index', async (req, res) => {
     // index-based delete (for backward compat with the frontend)
     const idx = parseInt(req.params.index, 10);
+
+    if (IS_LOCAL_MODE) {
+        const pool = loadJsonFile(DEFAULT_PATHS.websites);
+        if (idx >= 0 && idx < pool.length) {
+            pool.splice(idx, 1);
+            saveJsonFile(DEFAULT_PATHS.websites, pool);
+            return res.json({ deleted: true });
+        }
+        return res.status(404).json({ error: 'not found' });
+    }
+
     const { data } = await req.supabase.from('ads_website').select('id').order('created_at');
     const entry = (data || [])[idx];
     if (!entry) return res.status(404).json({ error: 'not found' });
