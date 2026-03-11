@@ -336,7 +336,7 @@ async function removeProxyFromAdsPower(userId, proxyHost, db) {
 
 function buildFingerprintConfig(proxy, fp, osInput) {
     const effectiveOs = (osInput || 'windows').toLowerCase();
-    const osMap = { windows: 0, mac: 1, android: 2, ios: 3, iphone: 3 };
+    const osMap = { windows: 0, mac: 1, ios: 2, iphone: 2, android: 3 };
     const osPlatform = osMap[effectiveOs] ?? 0;
 
     let resolution = '1366x768';
@@ -433,6 +433,7 @@ async function createAdsPowerProfile(userId, proxy, settings, db) {
     const body = {
         name,
         os_type: effectiveOs,
+        platform: fingerprintConfig.platform, // Ensure root level platform is set
         group_id: settings.groupId || '0',
         domain_name: '',
         open_urls: Array.isArray(settings.openUrls) ? settings.openUrls : [],
@@ -666,11 +667,23 @@ app.get('/api/stats', async (req, res) => {
         const websites = loadJsonFile(DEFAULT_PATHS.websites);
         const running = userAutomations.has(req.user.id);
 
+        let activeProfiles = 0;
+        const settings = loadJsonFile(DEFAULT_PATHS.settings);
+        const { baseUrl, apiKey } = settings.adsPower || {};
+        if (baseUrl) {
+            try {
+                const api = axios.create({ baseURL: baseUrl, timeout: 5000, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
+                const resp = await api.get('/api/v1/user/list', { params: { page_size: 1 } }).catch(() => null);
+                activeProfiles = resp?.data?.data?.page_info?.total_count || resp?.data?.page_info?.total_count || 0;
+            } catch (_) { }
+        }
+
         return res.json({
             totalProxies: proxies.length,
             usedProxies: used.length,
-            freshProxies: proxies.length - used.length, // Rough estimate
+            freshProxies: proxies.length - used.length,
             websites: websites.length,
+            activeProfiles,
             running
         });
     }
@@ -695,8 +708,8 @@ app.get('/api/stats', async (req, res) => {
     if (baseUrl) {
         try {
             const api = axios.create({ baseURL: baseUrl, timeout: 5000, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
-            const resp = await api.get('/api/v1/user/list', { params: { page_size: 1 } });
-            activeProfiles = resp?.data?.data?.page_info?.total_count || 0;
+            const resp = await api.get('/api/v1/user/list', { params: { page_size: 1 } }).catch(() => null);
+            activeProfiles = resp?.data?.data?.page_info?.total_count || resp?.data?.page_info?.total_count || 0;
         } catch (_) { }
     }
 
@@ -731,11 +744,21 @@ app.get('/api/profiles/list', async (req, res) => {
     if (!baseUrl) return res.json({ list: [] });
 
     try {
+        console.log(`[profiles:list] Fetching from AdsPower: ${baseUrl}`);
         const api = axios.create({ baseURL: baseUrl, timeout: 25000, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
         const resp = await api.get('/api/v1/user/list', { params: { page_size: 100 } });
-        res.json({ list: resp?.data?.data?.list || resp?.data?.list || [] });
+        
+        if (resp.data.code !== 0) {
+            console.warn(`[profiles:list] AdsPower API returned error code ${resp.data.code}: ${resp.data.msg}`);
+            return res.json({ list: [], error: resp.data.msg });
+        }
+
+        const rawList = resp?.data?.data?.list || resp?.data?.list || [];
+        console.log(`[profiles:list] Found ${rawList.length} profiles.`);
+        res.json({ list: rawList });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(`[profiles:list] Connection failed: ${err.message}`);
+        res.status(500).json({ error: `Connection to AdsPower failed: ${err.message}. Ensure AdsPower is running and API is enabled.` });
     }
 });
 
@@ -802,7 +825,8 @@ app.post('/api/profiles/create', async (req, res) => {
             try {
                 const found = existingProfiles.find(ep =>
                     ep.user_proxy_config?.proxy_host === p.host &&
-                    String(ep.user_proxy_config?.proxy_port) === String(p.port)
+                    String(ep.user_proxy_config?.proxy_port) === String(p.port) &&
+                    (ep.user_proxy_config?.proxy_user || '') === (p.user || '')
                 );
 
                 if (found) {

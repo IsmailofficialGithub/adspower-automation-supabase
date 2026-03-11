@@ -386,7 +386,7 @@ function getEffectiveOS(proxy) {
 
 function buildFingerprintConfig(proxy, fp, osInput) {
   const effectiveOs = (osInput || 'windows').toLowerCase();
-  const osMap = { windows: 0, mac: 1, android: 2, ios: 3, iphone: 3 };
+  const osMap = { windows: 0, mac: 1, ios: 2, iphone: 2, android: 3 };
   const osPlatform = osMap[effectiveOs] ?? 0;
 
 
@@ -1243,7 +1243,8 @@ async function runBatch(freshPool, websites, cfg) {
     // DEDUPLICATION: Check if a profile with this proxy host:port already exists
     const existing = existingList.find(p =>
       p.user_proxy_config?.proxy_host === proxy.host &&
-      String(p.user_proxy_config?.proxy_port) === String(proxy.port)
+      String(p.user_proxy_config?.proxy_port) === String(proxy.port) &&
+      (p.user_proxy_config?.proxy_user || '') === (proxy.user || '')
     );
 
     if (existing) {

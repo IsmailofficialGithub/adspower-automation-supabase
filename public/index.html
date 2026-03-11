@@ -993,6 +993,24 @@
       font-size: 12px;
       color: var(--muted);
     }
+
+    .spin {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      100% { transform: rotate(360deg); }
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      display: inline-block;
+      animation: spin 0.8s linear infinite;
+    }
   </style>
 </head>
 
@@ -1265,7 +1283,7 @@
             <div class="card-header">
               <span class="card-title">AdsPower Profiles <span id="px-profile-count"
                   style="color:var(--muted);font-size:12px;font-weight:400"></span></span>
-              <button class="btn btn-ghost btn-sm" onclick="loadProfiles()">
+              <button class="btn btn-ghost btn-sm" id="profileRefreshBtn" onclick="loadProfiles()">
                 <i data-lucide="refresh-cw"></i> Refresh
               </button>
             </div>
@@ -1670,7 +1688,7 @@
                     style="width:120px;height:28px;font-size:11px" onchange="applyLogFilters()">
                 </div>
 
-                <button class="btn btn-ghost btn-sm" onclick="loadLogs()"
+                <button class="btn btn-ghost btn-sm" id="logRefreshBtn" onclick="loadLogs()"
                   style="color:var(--primary);border-color:rgba(var(--primary-rgb),.2)">
                   <i data-lucide="refresh-cw"></i> Refresh
                 </button>
@@ -2058,9 +2076,22 @@
     // ── Logs ──────────────────────────────────────────────────────────────────────
     let rawLogs = [];
     async function loadLogs() {
-      toast('Refreshing logs...', 'info');
-      rawLogs = await fetch('/api/success-logs').then(r => r.json());
-      applyLogFilters();
+      const btn = document.getElementById('logRefreshBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i data-lucide="refresh-cw" class="spin"></i> Refreshing...';
+        lucide.createIcons();
+      }
+      try {
+        rawLogs = await fetch('/api/success-logs').then(r => r.json());
+        applyLogFilters();
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i data-lucide="refresh-cw"></i> Refresh';
+          lucide.createIcons();
+        }
+      }
     }
 
     function applyLogFilters() {
@@ -2112,11 +2143,37 @@
 
     // ── Profiles ──────────────────────────────────────────────────────────────────
     async function loadProfiles() {
-      const data = await fetch('/api/profiles/list').then(r => r.json());
-      const profiles = data.list || [];
-      document.getElementById('px-profile-count').textContent = `(${profiles.length})`;
-      renderProfileTable(profiles);
-      updateStatus();
+      const btn = document.getElementById('profileRefreshBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i data-lucide="refresh-cw" class="spin"></i> Refreshing...';
+        lucide.createIcons();
+      }
+
+      try {
+        const resp = await fetch('/api/profiles/list');
+        const data = await resp.json();
+        
+        if (data.error) {
+           toast(data.error, 'error');
+           return;
+        }
+
+        const profiles = data.list || [];
+        document.getElementById('px-profile-count').textContent = `(${profiles.length})`;
+        renderProfileTable(profiles);
+        // updateStatus() already polls periodically, but we can trigger it immediately
+        updateStatus();
+      } catch (err) {
+        console.error('Failed to load profiles:', err);
+        toast('Connection error while loading profiles', 'error');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i data-lucide="refresh-cw"></i> Refresh';
+          lucide.createIcons();
+        }
+      }
     }
 
     function renderProfileTable(list) {
@@ -2127,7 +2184,17 @@
       }
       tbody.innerHTML = list.map(p => {
         const createdDate = p.created_time ? new Date(p.created_time * 1000).toLocaleDateString() : '—';
-        const os = (p.os_type || 'windows').toLowerCase();
+        
+        // AdsPower return OS either as 'os_type' (string) or 'platform' (index)
+        let os = (p.os_type || '').toLowerCase();
+        if (!os || os === 'windows') {
+          const platformMap = { 0: 'windows', 1: 'mac', 2: 'ios', 3: 'android', 4: 'linux' };
+          if (p.platform !== undefined && platformMap[p.platform]) {
+            os = platformMap[p.platform];
+          }
+        }
+        if (!os) os = 'windows';
+
         let osIcon = 'monitor';
         if (os.includes('android')) osIcon = 'smartphone';
         if (os.includes('ios') || os.includes('iphone')) osIcon = 'tablet-smartphone';
