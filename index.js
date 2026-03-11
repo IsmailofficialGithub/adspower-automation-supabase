@@ -379,23 +379,15 @@ async function fetchExistingProfileCount() {
  * - Otherwise, it respects the user's explicit OS choice.
  */
 function getEffectiveOS(proxy) {
-  const host = (proxy.host || '').toLowerCase();
-  const user = (proxy.user || '').toLowerCase();
-  const pass = (proxy.pass || '').toLowerCase();
-  const savedOs = (proxy.os || 'windows').toLowerCase();
-
-  // 1. Force Mobile if 'mobile' keywords found in proxy details
-  if (host.includes('mobile') || user.includes('mobile') || pass.includes('mobile')) {
-    return 'android';
-  }
-
-  // 2. Return the saved OS (defaults to 'windows' if not specified)
-  // We removed the randomization logic that was forcing a mix of OS types.
-  return savedOs;
+  // Use the OS explicitly stored with the proxy, defaulting to 'windows' if missing.
+  // We removed automatic detection based on keywords like 'mobile' to give the user absolute control.
+  return (proxy.os || 'windows').toLowerCase();
 }
 
-function buildFingerprintConfig(proxy, fp, effectiveOs) {
-  const osPlatform = OS_PLATFORM[effectiveOs] ?? 0;
+function buildFingerprintConfig(proxy, fp, osInput) {
+  const effectiveOs = (osInput || 'windows').toLowerCase();
+  const osMap = { windows: 0, mac: 1, android: 2, ios: 3, iphone: 3 };
+  const osPlatform = osMap[effectiveOs] ?? 0;
 
 
   // Screen resolution
@@ -498,16 +490,19 @@ function buildFingerprintConfig(proxy, fp, effectiveOs) {
   // Only add random_ua when enabled.
   // AdsPower requires it as a JSON *string* with specific keys — omit entirely when off.
   // ua_version MUST NOT be an empty array; omit it to mean "any version".
-  // Force AdsPower to generate a User-Agent for the correct OS if no custom UA is provided.
-  // AdsPower expects random_ua as an object within the JSON payload.
+  // Generate randomized User-Agent instructions targeting the specific OS
   if (fp?.randomFingerprint || !fp?.userAgent) {
     try {
-      const browserOs = effectiveOs === 'mac' ? 'mac' : (effectiveOs === 'android' ? 'android' : (effectiveOs === 'ios' || effectiveOs === 'iphone' ? 'ios' : 'win'));
+      // Map our internal OS strings to AdsPower's random_ua platform strings
+      let browserOs = 'Windows';
+      if (effectiveOs === 'mac') browserOs = 'Mac OS X';
+      else if (effectiveOs === 'android') browserOs = 'Android';
+      else if (effectiveOs === 'ios' || effectiveOs === 'iphone') browserOs = 'iOS';
+
       fingerprintResult.random_ua = {
         ua_browser: ['chrome'],
-        ua_os: [browserOs],
+        ua_system_version: [browserOs],
       };
-
     } catch (_) {
       // If anything goes wrong building random_ua, skip it — don't break profile creation
     }
@@ -543,6 +538,7 @@ async function createProfile(proxy, name, effectiveOs) {
 
   const body = {
     name,
+    os_type: effectiveOs,
     group_id: userSettings.groupId || '0',
     domain_name: '',
     open_urls: openUrls,

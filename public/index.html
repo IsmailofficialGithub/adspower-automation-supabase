@@ -1275,8 +1275,9 @@
                   <tr>
                     <th>Name</th>
                     <th>Profile ID</th>
+                    <th>OS</th>
                     <th>Proxy IP</th>
-                    <th>Last IP</th>
+                    <th>Region</th>
                     <th>Created</th>
                     <th></th>
                   </tr>
@@ -2124,16 +2125,31 @@
         tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><i data-lucide="users"></i><p>No profiles found</p></div></td></tr>';
         lucide.createIcons(); return;
       }
-      tbody.innerHTML = list.map(p => `
-        <tr>
-          <td>${escHtml(p.name)}</td>
-          <td style="font-family:monospace;font-size:11px">${escHtml(p.user_id)}</td>
-          <td style="font-family:monospace;font-size:12px">${escHtml(p.user_proxy_config?.proxy_host || '—')}</td>
-          <td style="font-family:monospace;font-size:12px">${escHtml(p.ip || '—')}</td>
-          <td>${escHtml(p.country || '—')}</td>
-          <td><button class="btn btn-danger btn-sm" onclick="deleteProfile('${escHtml(p.user_id)}')"><i data-lucide="trash-2"></i></button></td>
-        </tr>
-      `).join('');
+      tbody.innerHTML = list.map(p => {
+        const createdDate = p.created_time ? new Date(p.created_time * 1000).toLocaleDateString() : '—';
+        const os = (p.os_type || 'windows').toLowerCase();
+        let osIcon = 'monitor';
+        if (os.includes('android')) osIcon = 'smartphone';
+        if (os.includes('ios') || os.includes('iphone')) osIcon = 'tablet-smartphone';
+        if (os.includes('mac')) osIcon = 'laptop';
+
+        return `
+          <tr>
+            <td>${escHtml(p.name)}</td>
+            <td style="font-family:monospace;font-size:11px">${escHtml(p.user_id)}</td>
+            <td>
+              <div style="display:flex;align-items:center;gap:6px;font-size:11px;text-transform:capitalize">
+                <i data-lucide="${osIcon}" style="width:14px;height:14px;color:var(--muted)"></i>
+                ${escHtml(os)}
+              </div>
+            </td>
+            <td style="font-family:monospace;font-size:12px">${escHtml(p.user_proxy_config?.proxy_host || '—')}</td>
+            <td><span class="badge badge-fresh">${escHtml(p.region || '—')}</span></td>
+            <td style="font-size:11px;color:var(--muted)">${escHtml(createdDate)}</td>
+            <td><button class="btn btn-danger btn-sm" onclick="deleteProfile('${escHtml(p.user_id)}')"><i data-lucide="trash-2"></i></button></td>
+          </tr>
+        `;
+      }).join('');
       lucide.createIcons();
     }
 

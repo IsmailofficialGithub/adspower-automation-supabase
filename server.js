@@ -251,7 +251,10 @@ function parseProxyUrl(str, defaultOs = 'windows') {
 
 function normalizeProxy(entry, defaultOs = 'windows') {
     if (typeof entry === 'string') return parseProxyUrl(entry, defaultOs);
-    if (entry && typeof entry === 'object') return entry;
+    if (entry && typeof entry === 'object') {
+        const cleanOs = (defaultOs || entry.os || 'windows').toLowerCase();
+        return { ...entry, os: cleanOs };
+    }
     return null;
 }
 
@@ -331,8 +334,9 @@ async function removeProxyFromAdsPower(userId, proxyHost, db) {
     }
 }
 
-function buildFingerprintConfig(proxy, fp, effectiveOs) {
-    const osMap = { windows: 0, mac: 1, ios: 2, iphone: 2, android: 3 };
+function buildFingerprintConfig(proxy, fp, osInput) {
+    const effectiveOs = (osInput || 'windows').toLowerCase();
+    const osMap = { windows: 0, mac: 1, android: 2, ios: 3, iphone: 3 };
     const osPlatform = osMap[effectiveOs] ?? 0;
 
     let resolution = '1366x768';
@@ -390,11 +394,22 @@ function buildFingerprintConfig(proxy, fp, effectiveOs) {
         fingerprintResult.accuracy = fp.customAccuracy ? parseFloat(fp.customAccuracy) : 100;
     }
 
-    // Force AdsPower to generate a User-Agent for the correct OS if no custom UA is provided.
-    // AdsPower expects random_ua as an object within the JSON payload.
+    // Generate randomized User-Agent instructions targeting the specific OS
     if (fp?.randomFingerprint || !fp?.userAgent) {
-        const browserOs = effectiveOs === 'mac' ? 'mac' : (effectiveOs === 'android' ? 'android' : (effectiveOs === 'ios' || effectiveOs === 'iphone' ? 'ios' : 'win'));
-        fingerprintResult.random_ua = { ua_browser: ['chrome'], ua_os: [browserOs] };
+        // Map our internal OS strings to AdsPower's random_ua platform strings
+        let browserOs = 'Windows';
+        if (effectiveOs === 'mac') browserOs = 'Mac OS X';
+        else if (effectiveOs === 'android') browserOs = 'Android';
+        else if (effectiveOs === 'ios' || effectiveOs === 'iphone') browserOs = 'iOS';
+
+        fingerprintResult.random_ua = {
+            ua_browser: ['chrome'],
+            ua_system_version: [browserOs]
+        };
+        // Ensure hardcoded UA doesn't override random_ua for the wrong OS
+        fingerprintResult.ua = '';
+    } else {
+        console.log(`[buildFingerprintConfig] Using hardcoded UA: ${fp.userAgent}. This might conflict with effectiveOs: ${effectiveOs}`);
     }
 
     return fingerprintResult;
@@ -411,15 +426,20 @@ async function createAdsPowerProfile(userId, proxy, settings, db) {
     });
 
     const fp = settings.fingerprint || {};
-    const effectiveOs = proxy.os || 'windows';
+    const effectiveOs = (proxy.os || 'windows').toLowerCase();
     const fingerprintConfig = buildFingerprintConfig(proxy, fp, effectiveOs);
 
     const name = `Profile-${proxy.host.slice(-6)}-${Math.floor(Math.random() * 999)}`;
     const body = {
         name,
+        os_type: effectiveOs,
         group_id: settings.groupId || '0',
+        domain_name: '',
         open_urls: Array.isArray(settings.openUrls) ? settings.openUrls : [],
+        username: '', password: '', fakey: '',
         cookie: settings.cookie || '',
+        ignore_cookie_error: '1',
+        sys_app_cate_id: '0',
         user_proxy_config: {
             proxy_soft: 'other',
             proxy_type: proxy.protocol || 'socks5',
@@ -431,7 +451,12 @@ async function createAdsPowerProfile(userId, proxy, settings, db) {
         fingerprint_config: fingerprintConfig,
     };
 
+    console.log(`\n--- CREATING PROFILE: ${proxy.host} ---`);
+    console.log(`Requested OS: ${effectiveOs}`);
+    console.log(`Request Body:`, JSON.stringify(body, null, 2));
+
     const res = await api.post('/api/v1/user/create', body);
+    console.log(`AdsPower API Response:`, JSON.stringify(res.data));
     if (res.data.code !== 0) throw new Error(res.data.msg);
     return res.data.data;
 }
@@ -770,7 +795,7 @@ app.post('/api/profiles/create', async (req, res) => {
             const listRes = await api.get('/api/v1/user/list', { params: { page_size: 100 } });
             existingProfiles = listRes?.data?.data?.list || [];
         } catch (err) {
-            console.error('Pre-creation profile check failed:', err.message);
+            console.warn('Existing profile check failed:', err.message);
         }
 
         for (const p of targets) {
@@ -781,12 +806,15 @@ app.post('/api/profiles/create', async (req, res) => {
                 );
 
                 if (found) {
-                    console.log(`Skipping duplicate profile creation for ${p.host}:${p.port} (ID: ${found.user_id})`);
-                } else {
-                    await createAdsPowerProfile(userId, p, settings, db);
+                    console.log(`[AdsPower] Overwriting profile for ${p.host}:${p.port} (Old ID: ${found.user_id}) for OS: ${p.os}`);
+                    const { baseUrl, apiKey } = settings.adsPower;
+                    const api_del = axios.create({ baseURL: baseUrl, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
+                    await api_del.post('/api/v1/user/delete', { user_ids: [found.user_id] }).catch(() => null);
+                    await new Promise(r => setTimeout(r, 800));
                 }
 
-                // Mark as used either way so they appear in the dashboard correctly
+                await createAdsPowerProfile(userId, p, settings, db);
+
                 if (IS_LOCAL_MODE) {
                     const uPool = loadJsonFile(DEFAULT_PATHS.usedProxies);
                     if (!uPool.find(up => proxyKey(up) === proxyKey(p))) {
@@ -1067,6 +1095,12 @@ function normalizeUrl(raw) {
     if (/^[a-z][a-z0-9+\-.]*:\/\//i.test(s)) return s;
     // No scheme — default to https://
     return 'https://' + s;
+}
+
+function getEffectiveOS(proxy) {
+    // Use the OS explicitly stored with the proxy, defaulting to 'windows' if missing.
+    // We removed automatic detection based on keywords like 'mobile' to give the user absolute control.
+    return (proxy.os || 'windows').toLowerCase();
 }
 
 app.post('/api/websites/add', async (req, res) => {
