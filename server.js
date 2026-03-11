@@ -88,6 +88,9 @@ const supabaseAnon = IS_LOCAL_MODE ? null : createClient(SUPABASE_URL, SUPABASE_
 
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
+// Keep track of active background creation tasks
+const creationTasks = new Map(); // userId -> count
+
 /**
  * requireAuth — validates the Bearer token from Authorization header
  * Attaches req.user (Supabase user object) and req.supabase (user-scoped client)
@@ -724,6 +727,7 @@ app.get('/api/stats', async (req, res) => {
         freshProxies,
         websites: websites || 0,
         activeProfiles,
+        creatingProfiles: creationTasks.get(userId) || 0,
         running: userAutomations.has(userId)
     });
 });
@@ -807,9 +811,11 @@ app.post('/api/profiles/create', async (req, res) => {
 
     if (!targets.length) return res.json({ error: 'Selected proxies could not be parsed. Ensure they follow the format: host:port:user:pass' });
 
-    res.json({ message: `Creating ${targets.length} profile(s)...` });
+    res.json({ message: `Success! Creating ${targets.length} profile(s). You can close this modal.` });
 
     (async () => {
+        creationTasks.set(userId, (creationTasks.get(userId) || 0) + targets.length);
+        
         // Fetch existing profiles to avoid duplicates (first 200)
         let existingProfiles = [];
         try {
@@ -823,20 +829,7 @@ app.post('/api/profiles/create', async (req, res) => {
 
         for (const p of targets) {
             try {
-                const found = existingProfiles.find(ep =>
-                    ep.user_proxy_config?.proxy_host === p.host &&
-                    String(ep.user_proxy_config?.proxy_port) === String(p.port) &&
-                    (ep.user_proxy_config?.proxy_user || '') === (p.user || '')
-                );
-
-                if (found) {
-                    console.log(`[AdsPower] Overwriting profile for ${p.host}:${p.port} (Old ID: ${found.user_id}) for OS: ${p.os}`);
-                    const { baseUrl, apiKey } = settings.adsPower;
-                    const api_del = axios.create({ baseURL: baseUrl, headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {} });
-                    await api_del.post('/api/v1/user/delete', { user_ids: [found.user_id] }).catch(() => null);
-                    await new Promise(r => setTimeout(r, 800));
-                }
-
+                // (Overwrite check removed to allow multiple profiles per proxy)
                 await createAdsPowerProfile(userId, p, settings, db);
 
                 if (IS_LOCAL_MODE) {
@@ -854,6 +847,10 @@ app.post('/api/profiles/create', async (req, res) => {
                 await new Promise(resolve => setTimeout(resolve, 2400));
             } catch (err) {
                 console.error(`Failed to create profile for ${p.host}: ${err.message}`);
+            } finally {
+                const current = creationTasks.get(userId) || 1;
+                if (current <= 1) creationTasks.delete(userId);
+                else creationTasks.set(userId, current - 1);
             }
         }
     })();

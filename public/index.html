@@ -1131,7 +1131,7 @@
               <div class="stat-icon amber-icon"><i data-lucide="users"></i></div>
               <div class="stat-label">Active Profiles</div>
               <div class="stat-value" id="s-profiles">—</div>
-              <div class="stat-sub">in AdsPower</div>
+              <div class="stat-sub" id="s-profiles-sub">in AdsPower</div>
             </div>
           </div>
 
@@ -1927,6 +1927,12 @@
         document.getElementById('s-used').textContent = s.usedProxies;
         document.getElementById('s-fresh').textContent = s.freshProxies;
         document.getElementById('s-sites').textContent = s.websites;
+        if (s.creatingProfiles > 0) {
+          const sub = document.getElementById('s-profiles-sub');
+          sub.innerHTML = `<span style="color:var(--amber);font-weight:600"><i class="spinner" style="width:10px;height:10px"></i> Creating ${s.creatingProfiles}...</span>`;
+        } else {
+          document.getElementById('s-profiles-sub').textContent = 'in AdsPower';
+        }
         document.getElementById('s-profiles').textContent = s.activeProfiles || 0;
         document.getElementById('s-fresh-sub').textContent = `${s.freshProxies} fresh`;
         const pct = s.totalProxies ? Math.round(s.usedProxies / s.totalProxies * 100) : 0;
@@ -2317,7 +2323,7 @@
       }
 
       btn.disabled = true;
-      btn.innerHTML = '<div class="spinner"></div> Creating...';
+      btn.innerHTML = '<i class="spinner"></i> Processing...';
 
       try {
         const r = await fetch('/api/profiles/create', {
@@ -2332,10 +2338,11 @@
 
         if (r.error) toast(r.error, 'error');
         else {
-          toast(r.message || 'Profiles created successfully', 'success');
+          toast(r.message || 'Profile creation started in background', 'success');
           closeModal('createProfileModal');
           document.getElementById('modal-proxy-bulk').value = '';
-          loadProfiles();
+          // Trigger an immediate update to show the "Creating..." status
+          updateStatus();
         }
       } catch (err) {
         toast('Connection error: ' + err.message, 'error');
@@ -2349,8 +2356,8 @@
     async function addProxies() {
       const bulk = document.getElementById('proxyBulk').value.trim();
       const entries = [];
-
       const os = document.getElementById('px-os').value;
+
       if (bulk) {
         bulk.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => entries.push(l));
       } else {
@@ -2365,16 +2372,26 @@
 
       if (!entries.length) { toast('No proxies to add', 'error'); return; }
 
-      const r = await fetch('/api/proxies/add', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entries, defaultOs: os })
-      }).then(r => r.json());
+      const btn = event?.currentTarget?.tagName === 'BUTTON' ? event.currentTarget : document.querySelector('button[onclick="addProxies()"]');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<i class="spinner"></i> Adding...'; }
+      try {
+        const r = await fetch('/api/proxies/add', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entries, defaultOs: os })
+        }).then(r => r.json());
 
-      toast(`Added ${r.added} proxy/proxies`, r.added > 0 ? 'success' : 'info');
-      document.getElementById('proxyBulk').value = '';
-      ['px-host', 'px-port', 'px-user', 'px-pass'].forEach(id => document.getElementById(id).value = '');
-      loadProxies();
-      updateStatus();
+        toast(`Added ${r.added} proxy/proxies`, r.added > 0 ? 'success' : 'info');
+        document.getElementById('proxyBulk').value = '';
+        ['px-host', 'px-port', 'px-user', 'px-pass'].forEach(id => document.getElementById(id).value = '');
+        loadProxies();
+        updateStatus();
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i data-lucide="plus-circle"></i> Add Proxy/Proxies';
+          lucide.createIcons();
+        }
+      }
     }
 
     async function deleteProxy(key) {
